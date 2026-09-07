@@ -4,8 +4,8 @@ import {
   isSyncReady,
   isValidPhone,
   isValidPin,
-} from "./storage.js";
-import { renderLineChart } from "./chart.js";
+} from "./storage.js?v=20260907c";
+import { renderLineChart } from "./chart.js?v=20260907c";
 
 const WEEK_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
 const THUMB_SVG = `<svg class="day-thumb" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.6 8.5V5.2A2.2 2.2 0 0 0 12.4 3h-.3c-.7 0-1.3.4-1.6 1l-3.2 6.2H4.5A1.5 1.5 0 0 0 3 11.7v6.8A1.5 1.5 0 0 0 4.5 20h9.8c1.4 0 2.6-1 2.9-2.3l1.5-6.2c.3-1.4-.7-2.7-2.1-2.7h-2z"/></svg>`;
