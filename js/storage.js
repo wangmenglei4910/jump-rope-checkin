@@ -207,7 +207,6 @@ async function fetchStore(gistId, token) {
   const url = `https://api.github.com/gists/${gistId}?ts=${Date.now()}`;
   const res = await fetch(url, {
     method: "GET",
-    cache: "no-store",
     headers: authHeaders(token),
   });
   if (!res.ok) {
@@ -241,7 +240,6 @@ async function writeStore(gistId, token, store) {
   };
   const res = await fetch(`https://api.github.com/gists/${gistId}`, {
     method: "PATCH",
-    cache: "no-store",
     headers: {
       ...authHeaders(token),
       "Content-Type": "application/json",
