@@ -1,17 +1,19 @@
 /**
- * 跳绳打卡数据存储层
- * - 已配置 GitHub Gist + Token：云端同步（多端共享）
- * - 未配置：localStorage 本地存储（仅当前浏览器）
- *
- * 单日记录：{ count, durationSec, note, at }
+ * 多用户跳绳打卡存储
+ * - 用手机号 + 密码区分用户
+ * - GitHub Gist 云端同步（同一手机号多端共享）
  */
 
-const LOCAL_KEY = "jump-rope-checkin-data-v1";
 const CONFIG_OVERRIDE_KEY = "jump-rope-sync-config-v1";
-const POLL_MS = 3000;
+const SESSION_KEY = "jump-rope-session-v2";
+const POLL_MS = 5000;
 
-function emptyData() {
-  return { dates: {}, updatedAt: 0 };
+function emptyUser() {
+  return { pin: "", dates: {}, updatedAt: 0 };
+}
+
+function emptyStore() {
+  return { version: 2, users: {} };
 }
 
 function normalizeRecord(raw) {
@@ -36,56 +38,69 @@ function normalizeDates(dates) {
   return out;
 }
 
-/** 按每天记录的 at 合并，避免整包时间戳互相覆盖 */
-function mergeData(a, b) {
-  const dates = {};
-  const keys = new Set([
-    ...Object.keys(a?.dates || {}),
-    ...Object.keys(b?.dates || {}),
-  ]);
-  for (const key of keys) {
-    const left = a?.dates?.[key];
-    const right = b?.dates?.[key];
-    if (left && right) {
-      dates[key] = (Number(left.at) || 0) >= (Number(right.at) || 0) ? left : right;
-    } else {
-      dates[key] = left || right;
-    }
-  }
-  return {
-    dates: normalizeDates(dates),
-    updatedAt: Math.max(Number(a?.updatedAt) || 0, Number(b?.updatedAt) || 0, Date.now()),
-  };
+function normalizePhone(phone) {
+  return String(phone || "").replace(/\D/g, "");
 }
 
-function dataFingerprint(data) {
-  const keys = Object.keys(data?.dates || {}).sort();
-  return keys
-    .map((k) => {
-      const r = data.dates[k];
-      return `${k}:${r.count}:${r.durationSec}:${r.at}:${r.note || ""}`;
-    })
-    .join("|");
+export function isValidPhone(phone) {
+  return /^1\d{10}$/.test(normalizePhone(phone));
 }
 
-function loadLocal() {
+export function isValidPin(pin) {
+  return /^\d{4,8}$/.test(String(pin || ""));
+}
+
+function userLocalKey(phone) {
+  return `jump-rope-user-${normalizePhone(phone)}-v2`;
+}
+
+function loadUserLocal(phone) {
   try {
-    const raw = localStorage.getItem(LOCAL_KEY);
-    const legacy = !raw ? localStorage.getItem("daily-checkin-data-v1") : null;
-    const source = raw || legacy;
-    if (!source) return emptyData();
-    const parsed = JSON.parse(source);
+    const raw = localStorage.getItem(userLocalKey(phone));
+    if (!raw) return emptyUser();
+    const parsed = JSON.parse(raw);
     return {
+      pin: String(parsed.pin || ""),
       dates: normalizeDates(parsed.dates),
       updatedAt: Number(parsed.updatedAt) || 0,
     };
   } catch {
-    return emptyData();
+    return emptyUser();
   }
 }
 
-function saveLocal(data) {
-  localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
+function saveUserLocal(phone, user) {
+  localStorage.setItem(
+    userLocalKey(phone),
+    JSON.stringify({
+      pin: String(user.pin || ""),
+      dates: normalizeDates(user.dates),
+      updatedAt: Number(user.updatedAt) || 0,
+    })
+  );
+}
+
+export function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const phone = normalizePhone(parsed.phone);
+    const pin = String(parsed.pin || "");
+    if (!isValidPhone(phone) || !isValidPin(pin)) return null;
+    return { phone, pin };
+  } catch {
+    return null;
+  }
+}
+
+export function saveSession(phone, pin) {
+  const p = normalizePhone(phone);
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ phone: p, pin: String(pin) }));
+}
+
+export function clearSession() {
+  localStorage.removeItem(SESSION_KEY);
 }
 
 function loadConfigOverride() {
@@ -104,20 +119,16 @@ export function saveConfigOverride(partial) {
   return next;
 }
 
-export function clearConfigOverride() {
-  localStorage.removeItem(CONFIG_OVERRIDE_KEY);
-}
-
 function resolveConfig(userConfig = {}) {
   const override = loadConfigOverride();
   return {
     gistId: String(override.gistId || userConfig.gistId || "").trim(),
     githubToken: String(override.githubToken || userConfig.githubToken || "").trim(),
-    docId: userConfig.docId || "default",
   };
 }
 
-function isCloudConfigured(cfg) {
+export function isSyncReady(userConfig = {}) {
+  const cfg = resolveConfig(userConfig);
   return Boolean(
     cfg.gistId &&
       cfg.gistId.length >= 10 &&
@@ -137,26 +148,64 @@ function authHeaders(token) {
   };
 }
 
-function parseGistPayload(gist) {
-  const files = gist.files || {};
-  const file =
-    files["checkins.json"] ||
-    files[Object.keys(files).find((k) => k.endsWith(".json"))] ||
-    files[Object.keys(files)[0]];
-  if (!file || !file.content) return emptyData();
-  try {
-    const parsed = JSON.parse(file.content);
-    return {
-      dates: normalizeDates(parsed.dates),
-      updatedAt: Number(parsed.updatedAt) || 0,
-    };
-  } catch {
-    return emptyData();
+/** 兼容旧版单用户 { dates } 与新版 { users } */
+function parseStore(raw) {
+  if (!raw || typeof raw !== "object") return emptyStore();
+  if (raw.users && typeof raw.users === "object") {
+    const users = {};
+    for (const [phone, u] of Object.entries(raw.users)) {
+      const p = phone === "__legacy__" ? "__legacy__" : normalizePhone(phone);
+      if (!p) continue;
+      users[p] = {
+        pin: String(u?.pin || ""),
+        dates: normalizeDates(u?.dates),
+        updatedAt: Number(u?.updatedAt) || 0,
+      };
+    }
+    return { version: 2, users };
   }
+  // 旧数据：暂存到 __legacy__，登录时迁移到当前手机号
+  if (raw.dates && typeof raw.dates === "object") {
+    return {
+      version: 2,
+      users: {
+        __legacy__: {
+          pin: "",
+          dates: normalizeDates(raw.dates),
+          updatedAt: Number(raw.updatedAt) || 0,
+        },
+      },
+    };
+  }
+  return emptyStore();
 }
 
-async function fetchGistFile(gistId, token) {
-  // 防浏览器 / 中间层缓存，附带时间戳
+function mergeDates(a, b) {
+  const dates = {};
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const key of keys) {
+    const left = a?.[key];
+    const right = b?.[key];
+    if (left && right) {
+      dates[key] = (Number(left.at) || 0) >= (Number(right.at) || 0) ? left : right;
+    } else {
+      dates[key] = left || right;
+    }
+  }
+  return normalizeDates(dates);
+}
+
+function datesFingerprint(dates) {
+  return Object.keys(dates || {})
+    .sort()
+    .map((k) => {
+      const r = dates[k];
+      return `${k}:${r.count}:${r.durationSec}:${r.at}:${r.note || ""}`;
+    })
+    .join("|");
+}
+
+async function fetchStore(gistId, token) {
   const url = `https://api.github.com/gists/${gistId}?ts=${Date.now()}`;
   const res = await fetch(url, {
     method: "GET",
@@ -165,15 +214,32 @@ async function fetchGistFile(gistId, token) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`读取云端失败(${res.status}): ${text.slice(0, 120)}`);
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("Token 无效或权限不足，请重新配置（只需勾选 gist）");
+    }
+    if (res.status === 404) {
+      throw new Error("云端数据仓库不存在，请检查 gistId");
+    }
+    throw new Error(`读取云端失败(${res.status}): ${text.slice(0, 80)}`);
   }
-  return parseGistPayload(await res.json());
+  const gist = await res.json();
+  const files = gist.files || {};
+  const file =
+    files["checkins.json"] ||
+    files[Object.keys(files).find((k) => k.endsWith(".json"))] ||
+    files[Object.keys(files)[0]];
+  if (!file?.content) return emptyStore();
+  try {
+    return parseStore(JSON.parse(file.content));
+  } catch {
+    return emptyStore();
+  }
 }
 
-async function writeGistFile(gistId, token, data) {
+async function writeStore(gistId, token, store) {
   const payload = {
-    dates: normalizeDates(data.dates),
-    updatedAt: Number(data.updatedAt) || Date.now(),
+    version: 2,
+    users: store.users || {},
   };
   const res = await fetch(`https://api.github.com/gists/${gistId}`, {
     method: "PATCH",
@@ -192,14 +258,22 @@ async function writeGistFile(gistId, token, data) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`写入云端失败(${res.status}): ${text.slice(0, 120)}`);
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("Token 无效或权限不足，请重新配置");
+    }
+    if (res.status === 403 && /rate/i.test(text)) {
+      throw new Error("同步太频繁，请稍后再试");
+    }
+    throw new Error(`写入云端失败(${res.status}): ${text.slice(0, 80)}`);
   }
-  // 用响应体作为权威结果，避免紧接着 GET 读到旧缓存
   try {
-    return parseGistPayload(await res.json());
+    const gist = await res.json();
+    const content = gist.files?.["checkins.json"]?.content;
+    if (content) return parseStore(JSON.parse(content));
   } catch {
-    return payload;
+    /* ignore */
   }
+  return payload;
 }
 
 function todayStr() {
@@ -210,16 +284,29 @@ function todayStr() {
 
 export function createStorage(userConfig = {}) {
   const cfg = resolveConfig(userConfig);
-  const useCloud = isCloudConfigured(cfg);
+  const useCloud = isSyncReady(userConfig);
 
-  let data = loadLocal();
+  let session = loadSession();
+  let phone = session?.phone || "";
+  let data = phone ? loadUserLocal(phone) : emptyUser();
+  let cloudStore = emptyStore();
   let pollTimer = null;
   let pulling = false;
   let writing = false;
+  let dirty = false;
+  let lastError = "";
   const listeners = new Set();
 
   function notify(status) {
-    for (const fn of listeners) fn(data, status);
+    for (const fn of listeners) fn(getPublicData(), status, lastError);
+  }
+
+  function getPublicData() {
+    return {
+      dates: data.dates || {},
+      updatedAt: data.updatedAt || 0,
+      phone,
+    };
   }
 
   function onChange(fn) {
@@ -228,136 +315,260 @@ export function createStorage(userConfig = {}) {
   }
 
   function getData() {
-    return data;
+    return getPublicData();
   }
 
-  async function persist(next) {
+  function getPhone() {
+    return phone;
+  }
+
+  function isLoggedIn() {
+    return Boolean(phone && isValidPhone(phone));
+  }
+
+  async function pushCurrentUser(latestStore) {
+    const latest = latestStore || (await fetchStore(cfg.gistId, cfg.githubToken));
+    const users = { ...(latest.users || {}) };
+    users[phone] = {
+      pin: data.pin || session?.pin || "",
+      dates: normalizeDates(data.dates),
+      updatedAt: Number(data.updatedAt) || Date.now(),
+    };
+    if (users.__legacy__) delete users.__legacy__;
+    cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
+    const remoteUser = cloudStore.users?.[phone];
+    if (remoteUser) {
+      data = {
+        pin: remoteUser.pin || data.pin,
+        dates: normalizeDates(remoteUser.dates),
+        updatedAt: Number(remoteUser.updatedAt) || data.updatedAt,
+      };
+      saveUserLocal(phone, data);
+    }
+    dirty = false;
+  }
+
+  async function persistUserDates(nextDates) {
+    if (!phone) throw new Error("请先登录");
     writing = true;
+    dirty = true;
     try {
       data = {
-        dates: normalizeDates(next.dates),
+        pin: data.pin || session?.pin || "",
+        dates: normalizeDates(nextDates),
         updatedAt: Date.now(),
       };
-      saveLocal(data);
+      saveUserLocal(phone, data);
 
       if (useCloud) {
-        const confirmed = await writeGistFile(cfg.gistId, cfg.githubToken, data);
-        data = {
-          dates: normalizeDates(confirmed.dates),
-          updatedAt: Number(confirmed.updatedAt) || data.updatedAt,
-        };
-        saveLocal(data);
+        await pushCurrentUser();
+        lastError = "";
+        notify("online");
+      } else {
+        lastError = "";
+        notify("local");
       }
-
-      notify(useCloud ? "online" : "local");
-      return data;
+      return getPublicData();
+    } catch (err) {
+      lastError = err.message || "同步失败";
+      notify("error");
+      throw err;
     } finally {
       writing = false;
     }
   }
 
   async function upsert(dateKey, record) {
-    if (dateKey > todayStr()) {
-      throw new Error("不能给未来日期打卡");
-    }
+    if (dateKey > todayStr()) throw new Error("不能给未来日期打卡");
     const next = normalizeRecord({ ...record, at: Date.now() });
-    if (!next || next.count <= 0) {
-      throw new Error("请填写有效的跳绳个数");
-    }
+    if (!next || next.count <= 0) throw new Error("请填写有效的跳绳个数");
     const dates = { ...data.dates, [dateKey]: next };
-    return persist({ dates });
+    return persistUserDates(dates);
   }
 
   async function remove(dateKey) {
-    if (dateKey > todayStr()) {
-      throw new Error("不能修改未来日期");
-    }
+    if (dateKey > todayStr()) throw new Error("不能修改未来日期");
     const dates = { ...data.dates };
     delete dates[dateKey];
-    return persist({ dates });
+    return persistUserDates(dates);
   }
 
-  async function pullRemote({ force = false } = {}) {
-    if (!useCloud) return data;
-    if (pulling || writing) return data;
+  async function pullRemote() {
+    if (!useCloud || !phone || pulling || writing) return getPublicData();
     pulling = true;
     try {
-      let remote = await fetchGistFile(cfg.gistId, cfg.githubToken);
+      const latest = await fetchStore(cfg.gistId, cfg.githubToken);
+      cloudStore = latest;
+      const remoteUser = latest.users?.[phone];
 
-      // Gist 偶发延迟：若本地明显更新，短暂重试读取
-      const localFp = dataFingerprint(data);
-      const remoteFp = dataFingerprint(remote);
-      if (force && localFp && remoteFp !== localFp && (data.updatedAt || 0) > (remote.updatedAt || 0)) {
-        await new Promise((r) => setTimeout(r, 600));
-        remote = await fetchGistFile(cfg.gistId, cfg.githubToken);
+      if (!remoteUser) {
+        if (Object.keys(data.dates || {}).length > 0) {
+          writing = true;
+          try {
+            await pushCurrentUser(latest);
+          } finally {
+            writing = false;
+          }
+        }
+        lastError = "";
+        notify("online");
+        return getPublicData();
       }
 
-      const merged = mergeData(data, remote);
-      const mergedFp = dataFingerprint(merged);
-      const remoteNowFp = dataFingerprint(remote);
+      if (remoteUser.pin && session?.pin && remoteUser.pin !== session.pin) {
+        lastError = "密码与云端不一致，请重新登录";
+        notify("error");
+        return getPublicData();
+      }
 
-      // 远程缺了本地更新过的天：补写云端
-      if (mergedFp !== remoteNowFp) {
-        const confirmed = await writeGistFile(cfg.gistId, cfg.githubToken, {
-          ...merged,
-          updatedAt: Date.now(),
-        });
-        data = {
-          dates: normalizeDates(confirmed.dates),
-          updatedAt: Number(confirmed.updatedAt) || Date.now(),
-        };
+      const mergedDates = mergeDates(data.dates, remoteUser.dates);
+      const remoteFp = datesFingerprint(remoteUser.dates);
+      const mergedFp = datesFingerprint(mergedDates);
+
+      data = {
+        pin: remoteUser.pin || data.pin || session?.pin || "",
+        dates: mergedDates,
+        updatedAt: Math.max(Number(data.updatedAt) || 0, Number(remoteUser.updatedAt) || 0),
+      };
+      saveUserLocal(phone, data);
+
+      // 合并后比云端多了内容 → 写回；否则只读更新本地
+      if (mergedFp !== remoteFp) {
+        writing = true;
+        try {
+          data.updatedAt = Date.now();
+          await pushCurrentUser(latest);
+        } finally {
+          writing = false;
+        }
       } else {
-        data = {
-          dates: normalizeDates(merged.dates),
-          updatedAt: Math.max(Number(merged.updatedAt) || 0, Number(remote.updatedAt) || 0),
-        };
+        dirty = false;
       }
 
-      saveLocal(data);
+      lastError = "";
       notify("online");
-      return data;
+      return getPublicData();
+    } catch (err) {
+      lastError = err.message || "同步失败";
+      notify("error");
+      return getPublicData();
     } finally {
       pulling = false;
     }
   }
 
+  /**
+   * 登录 / 注册
+   * - 新手机号：创建账户
+   * - 已有手机号：校验密码
+   */
+  async function login(inputPhone, inputPin) {
+    const p = normalizePhone(inputPhone);
+    const pin = String(inputPin || "");
+    if (!isValidPhone(p)) throw new Error("请输入正确的11位手机号");
+    if (!isValidPin(pin)) throw new Error("密码需为4-8位数字");
+    if (!useCloud) throw new Error("请先配置云端同步 Token");
+
+    const latest = await fetchStore(cfg.gistId, cfg.githubToken);
+    cloudStore = latest;
+    const users = { ...(latest.users || {}) };
+    let user = users[p];
+
+    // 迁移旧版无主数据到当前账号（仅当该手机号首次注册）
+    if (!user && users.__legacy__ && Object.keys(users.__legacy__.dates || {}).length > 0) {
+      user = {
+        pin,
+        dates: normalizeDates(users.__legacy__.dates),
+        updatedAt: Number(users.__legacy__.updatedAt) || Date.now(),
+      };
+      users[p] = user;
+      delete users.__legacy__;
+      cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
+      user = cloudStore.users?.[p] || user;
+    } else if (!user) {
+      user = { pin, dates: {}, updatedAt: Date.now() };
+      users[p] = user;
+      cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
+      user = cloudStore.users?.[p] || user;
+    } else if (user.pin && user.pin !== pin) {
+      throw new Error("密码错误");
+    } else if (!user.pin) {
+      // 补设密码
+      user = { ...user, pin, updatedAt: Date.now() };
+      users[p] = user;
+      cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
+      user = cloudStore.users?.[p] || user;
+    }
+
+    phone = p;
+    session = { phone: p, pin };
+    saveSession(p, pin);
+    data = {
+      pin: user.pin || pin,
+      dates: normalizeDates(user.dates),
+      updatedAt: Number(user.updatedAt) || Date.now(),
+    };
+    // 合并本地缓存
+    const local = loadUserLocal(p);
+    data.dates = mergeDates(local.dates, data.dates);
+    saveUserLocal(p, data);
+    dirty = false;
+    lastError = "";
+    notify("online");
+    startPolling();
+    return getPublicData();
+  }
+
+  function logout() {
+    clearSession();
+    phone = "";
+    session = null;
+    data = emptyUser();
+    destroy();
+    notify("local");
+  }
+
   function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
+    if (!useCloud || !phone) return;
     pollTimer = setInterval(() => {
-      if (document.hidden) return;
-      pullRemote().catch(() => notify("error"));
+      if (document.hidden || writing || dirty) return;
+      pullRemote().catch(() => {});
     }, POLL_MS);
   }
 
   async function init() {
     if (!useCloud) {
       notify("local");
-      return { mode: "local", message: "未配置云端，使用本地存储" };
+      return { mode: "local", message: "未配置云端" };
     }
-
+    if (!isLoggedIn()) {
+      notify("local");
+      return { mode: "need-login", message: "请登录" };
+    }
     try {
-      await pullRemote({ force: true });
-      startPolling();
-
+      // 用会话重新走一遍云端校验
+      await login(session.phone, session.pin);
       const onWake = () => {
-        pullRemote({ force: true }).catch(() => notify("error"));
+        if (!document.hidden) pullRemote().catch(() => {});
       };
-      document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) onWake();
-      });
+      document.addEventListener("visibilitychange", onWake);
       window.addEventListener("focus", onWake);
       window.addEventListener("pageshow", onWake);
-
-      return { mode: "online", message: "云端同步已开启" };
+      return { mode: "online", message: "已登录并同步" };
     } catch (err) {
-      console.error(err);
+      lastError = err.message || "登录失败";
+      clearSession();
+      phone = "";
+      session = null;
       notify("error");
-      return { mode: "error", message: err.message || "云端连接失败，已回退本地" };
+      return { mode: "error", message: lastError };
     }
   }
 
   function destroy() {
     if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
   }
 
   return {
@@ -365,14 +576,15 @@ export function createStorage(userConfig = {}) {
     destroy,
     onChange,
     getData,
+    getPhone,
+    isLoggedIn,
+    login,
+    logout,
     upsert,
     remove,
     pullRemote,
     isCloud: useCloud,
     config: cfg,
+    getLastError: () => lastError,
   };
-}
-
-export function isSyncReady(userConfig = {}) {
-  return isCloudConfigured(resolveConfig(userConfig));
 }

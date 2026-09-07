@@ -152,6 +152,64 @@ body {
   background: #f59e0b;
 }
 
+.user-line {
+  margin: 6px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.logout-btn {
+  font-family: inherit;
+  border: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(20, 35, 31, 0.06);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.logout-btn:hover {
+  background: rgba(20, 35, 31, 0.1);
+}
+
+.login-panel {
+  padding: 28px 18px 24px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+  animation: fade-up 0.55s ease both;
+}
+
+.login-panel .brand-title {
+  margin-bottom: 8px;
+}
+
+.login-desc {
+  margin: 0 0 18px;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.login-panel .field {
+  margin-bottom: 12px;
+}
+
+.login-panel .checkin-btn {
+  margin-top: 6px;
+}
+
 .sync-status.is-error .sync-dot {
   background: #ef4444;
 }

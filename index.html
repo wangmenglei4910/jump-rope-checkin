@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="description" content="跳绳打卡日历 — 记录个数与耗时，多端同步" />
+  <meta name="description" content="跳绳打卡日历 — 手机号分用户，多端同步" />
   <meta name="theme-color" content="#0f766e" />
   <title>跳绳打卡</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -16,29 +16,17 @@
   <div class="bg-grid" aria-hidden="true"></div>
 
   <div class="app">
-    <header class="header">
-      <div class="brand">
-        <p class="brand-mark">Jump Rope</p>
-        <h1 class="brand-title">跳绳打卡</h1>
-      </div>
-      <div class="sync-status" id="syncStatus" title="同步状态">
-        <span class="sync-dot" id="syncDot"></span>
-        <span id="syncText">连接中…</span>
-      </div>
-    </header>
-
+    <!-- 云端 Token 配置（全家共用一次） -->
     <section class="sync-setup" id="syncSetup" hidden>
-      <h3 class="sync-setup-title">开启多端同步</h3>
-      <p class="sync-setup-desc">
-        按下面两步完成后，手机和电脑会共享同一份跳绳数据。
-      </p>
+      <h3 class="sync-setup-title">第一步：开启云端</h3>
+      <p class="sync-setup-desc">只需配置一次。配置后可用手机号区分不同用户，同一手机号多端同步。</p>
       <ol class="sync-steps">
         <li>
           打开
-          <a href="https://github.com/settings/tokens/new?scopes=gist&description=jump-rope-checkin-sync" target="_blank" rel="noopener">创建 Token 页面</a>
-          ，Note 填 <code>jump-rope-sync</code>，只勾选 <code>gist</code>，生成后复制。
+          <a href="https://github.com/settings/tokens/new?scopes=gist&description=jump-rope-checkin-sync" target="_blank" rel="noopener">创建 Token</a>
+          ，只勾选 <code>gist</code>，生成后复制。
         </li>
-        <li>把 Token 粘贴到下方并保存（不要发给别人）。</li>
+        <li>粘贴到下方并保存。</li>
       </ol>
       <label class="field">
         <span class="field-label">GitHub Token</span>
@@ -46,99 +34,136 @@
       </label>
       <button type="button" class="checkin-btn" id="saveSyncBtn">
         <span class="checkin-btn-icon" aria-hidden="true">✓</span>
-        <span>保存并开启同步</span>
+        <span>保存云端配置</span>
       </button>
       <div class="sync-share" id="syncShare" hidden>
-        <p class="sync-setup-desc">手机用这个链接打开一次即可自动同步（含密钥，勿转发）：</p>
-        <button type="button" class="today-btn" id="copySyncLinkBtn" style="width:100%">复制手机同步链接</button>
-      </div>
-      <p class="action-hint" id="syncSetupHint">只勾选 gist，不要勾选 repo</p>
-    </section>
-
-    <section class="stats" aria-label="跳绳统计">
-      <div class="stat">
-        <span class="stat-value" id="statTotal">0</span>
-        <span class="stat-label">累计天数</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value" id="statStreak">0</span>
-        <span class="stat-label">当前连续</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value" id="statMonthBest">0</span>
-        <span class="stat-label">本月最佳</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value" id="statMonthSum">0</span>
-        <span class="stat-label">本月总数</span>
+        <p class="sync-setup-desc">把这个链接发到手机打开一次（含密钥，勿公开转发）：</p>
+        <button type="button" class="today-btn" id="copySyncLinkBtn" style="width:100%">复制配置链接</button>
       </div>
     </section>
 
-    <section class="calendar-panel">
-      <div class="calendar-toolbar">
-        <button type="button" class="nav-btn" id="prevMonth" aria-label="上个月">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-        </button>
-        <h2 class="month-title" id="monthTitle">2026年9月</h2>
-        <button type="button" class="nav-btn" id="nextMonth" aria-label="下个月">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-        </button>
-        <button type="button" class="today-btn" id="todayBtn">今天</button>
-      </div>
-
-      <div class="weekdays" aria-hidden="true">
-        <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
-      </div>
-      <div class="calendar-grid" id="calendarGrid" role="grid" aria-label="跳绳日历"></div>
-      <p class="calendar-legend">
-        <span class="legend-best" aria-hidden="true">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M14.6 8.5V5.2A2.2 2.2 0 0 0 12.4 3h-.3c-.7 0-1.3.4-1.6 1l-3.2 6.2H4.5A1.5 1.5 0 0 0 3 11.7v6.8A1.5 1.5 0 0 0 4.5 20h9.8c1.4 0 2.6-1 2.9-2.3l1.5-6.2c.3-1.4-.7-2.7-2.1-2.7h-2zM9 20H4.5a.5.5 0 0 1-.5-.5v-6.8a.5.5 0 0 1 .5-.5H9V20zm10.1-8.3-1.5 6.2a2 2 0 0 1-1.9 1.5H10V10.2l3-5.8c.1-.2.3-.4.6-.4h.3c.7 0 1.2.5 1.2 1.2v4.3c0 .6.4 1 1 1h2.9c.5 0 .9.5.8 1z"/></svg>
-        </span>
-        本月跳绳个数最多的一天
-      </p>
-    </section>
-
-    <section class="chart-panel" id="chartPanel" aria-label="本月跳绳折线图"></section>
-
-    <section class="record-panel" id="recordPanel">
-      <h3 class="record-title" id="recordTitle">今日跳绳</h3>
-
-      <div class="field-row">
-        <label class="field">
-          <span class="field-label">跳绳个数</span>
-          <input id="countInput" class="field-input" type="number" min="1" step="1" inputmode="numeric" placeholder="例如 800" />
-        </label>
-      </div>
-
-      <div class="field-row field-row-split">
-        <label class="field">
-          <span class="field-label">耗时（分）</span>
-          <input id="minInput" class="field-input" type="number" min="0" step="1" inputmode="numeric" placeholder="0" />
-        </label>
-        <label class="field">
-          <span class="field-label">耗时（秒）</span>
-          <input id="secInput" class="field-input" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0" />
-        </label>
-      </div>
-
+    <!-- 登录 -->
+    <section class="login-panel" id="loginPanel" hidden>
+      <p class="brand-mark">Jump Rope</p>
+      <h1 class="brand-title">跳绳打卡</h1>
+      <p class="login-desc">用手机号登录。不同手机号是不同用户；同一手机号在手机和电脑上数据同步。</p>
       <label class="field">
-        <span class="field-label">备注（可选）</span>
-        <textarea id="noteInput" class="note-input" rows="2" maxlength="200" placeholder="状态、感受…"></textarea>
+        <span class="field-label">手机号</span>
+        <input id="phoneInput" class="field-input" type="tel" maxlength="11" inputmode="numeric" placeholder="11位手机号" autocomplete="username" />
       </label>
-
-      <div class="record-actions">
-        <button type="button" class="checkin-btn" id="saveBtn">
-          <span class="checkin-btn-icon" aria-hidden="true">✓</span>
-          <span id="saveBtnText">保存打卡</span>
-        </button>
-        <button type="button" class="delete-btn" id="deleteBtn" hidden>删除该日</button>
-      </div>
-      <p class="action-hint" id="actionHint">填写个数和耗时后保存；点日历可选其他日期</p>
+      <label class="field">
+        <span class="field-label">密码（4-8位数字）</span>
+        <input id="pinInput" class="field-input" type="password" maxlength="8" inputmode="numeric" placeholder="首次登录即注册" autocomplete="current-password" />
+      </label>
+      <button type="button" class="checkin-btn" id="loginBtn">
+        <span class="checkin-btn-icon" aria-hidden="true">→</span>
+        <span>登录 / 注册</span>
+      </button>
+      <p class="action-hint">新手机号首次登录会自动注册</p>
     </section>
 
-    <footer class="footer">
-      <p>数据云端同步 · 多端共享同一配置即可</p>
-    </footer>
+    <!-- 主界面 -->
+    <div id="mainApp" hidden>
+      <header class="header">
+        <div class="brand">
+          <p class="brand-mark">Jump Rope</p>
+          <h1 class="brand-title">跳绳打卡</h1>
+          <p class="user-line" id="userLine">用户</p>
+        </div>
+        <div class="header-actions">
+          <div class="sync-status" id="syncStatus" title="同步状态">
+            <span class="sync-dot" id="syncDot"></span>
+            <span id="syncText">连接中…</span>
+          </div>
+          <button type="button" class="logout-btn" id="logoutBtn">退出</button>
+        </div>
+      </header>
+
+      <section class="stats" aria-label="跳绳统计">
+        <div class="stat">
+          <span class="stat-value" id="statTotal">0</span>
+          <span class="stat-label">累计天数</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="statStreak">0</span>
+          <span class="stat-label">当前连续</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="statMonthBest">0</span>
+          <span class="stat-label">本月最佳</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="statMonthSum">0</span>
+          <span class="stat-label">本月总数</span>
+        </div>
+      </section>
+
+      <section class="calendar-panel">
+        <div class="calendar-toolbar">
+          <button type="button" class="nav-btn" id="prevMonth" aria-label="上个月">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <h2 class="month-title" id="monthTitle">2026年9月</h2>
+          <button type="button" class="nav-btn" id="nextMonth" aria-label="下个月">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          </button>
+          <button type="button" class="today-btn" id="todayBtn">今天</button>
+        </div>
+
+        <div class="weekdays" aria-hidden="true">
+          <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+        </div>
+        <div class="calendar-grid" id="calendarGrid" role="grid" aria-label="跳绳日历"></div>
+        <p class="calendar-legend">
+          <span class="legend-best" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M14.6 8.5V5.2A2.2 2.2 0 0 0 12.4 3h-.3c-.7 0-1.3.4-1.6 1l-3.2 6.2H4.5A1.5 1.5 0 0 0 3 11.7v6.8A1.5 1.5 0 0 0 4.5 20h9.8c1.4 0 2.6-1 2.9-2.3l1.5-6.2c.3-1.4-.7-2.7-2.1-2.7h-2zM9 20H4.5a.5.5 0 0 1-.5-.5v-6.8a.5.5 0 0 1 .5-.5H9V20zm10.1-8.3-1.5 6.2a2 2 0 0 1-1.9 1.5H10V10.2l3-5.8c.1-.2.3-.4.6-.4h.3c.7 0 1.2.5 1.2 1.2v4.3c0 .6.4 1 1 1h2.9c.5 0 .9.5.8 1z"/></svg>
+          </span>
+          本月跳绳个数最多的一天
+        </p>
+      </section>
+
+      <section class="chart-panel" id="chartPanel" aria-label="本月跳绳折线图"></section>
+
+      <section class="record-panel" id="recordPanel">
+        <h3 class="record-title" id="recordTitle">今日跳绳</h3>
+
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label">跳绳个数</span>
+            <input id="countInput" class="field-input" type="number" min="1" step="1" inputmode="numeric" placeholder="例如 800" />
+          </label>
+        </div>
+
+        <div class="field-row field-row-split">
+          <label class="field">
+            <span class="field-label">耗时（分）</span>
+            <input id="minInput" class="field-input" type="number" min="0" step="1" inputmode="numeric" placeholder="0" />
+          </label>
+          <label class="field">
+            <span class="field-label">耗时（秒）</span>
+            <input id="secInput" class="field-input" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="field-label">备注（可选）</span>
+          <textarea id="noteInput" class="note-input" rows="2" maxlength="200" placeholder="状态、感受…"></textarea>
+        </label>
+
+        <div class="record-actions">
+          <button type="button" class="checkin-btn" id="saveBtn">
+            <span class="checkin-btn-icon" aria-hidden="true">✓</span>
+            <span id="saveBtnText">保存打卡</span>
+          </button>
+          <button type="button" class="delete-btn" id="deleteBtn" hidden>删除该日</button>
+        </div>
+        <p class="action-hint" id="actionHint">填写个数和耗时后保存</p>
+      </section>
+
+      <footer class="footer">
+        <p>同一手机号 · 多端自动同步</p>
+      </footer>
+    </div>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>

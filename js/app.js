@@ -1,42 +1,40 @@
-import { createStorage, saveConfigOverride, isSyncReady } from "./storage.js";
+import {
+  createStorage,
+  saveConfigOverride,
+  isSyncReady,
+  isValidPhone,
+  isValidPin,
+} from "./storage.js";
 import { renderLineChart } from "./chart.js";
 
 const WEEK_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
-
 const THUMB_SVG = `<svg class="day-thumb" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.6 8.5V5.2A2.2 2.2 0 0 0 12.4 3h-.3c-.7 0-1.3.4-1.6 1l-3.2 6.2H4.5A1.5 1.5 0 0 0 3 11.7v6.8A1.5 1.5 0 0 0 4.5 20h9.8c1.4 0 2.6-1 2.9-2.3l1.5-6.2c.3-1.4-.7-2.7-2.1-2.7h-2z"/></svg>`;
 
 function pad(n) {
   return String(n).padStart(2, "0");
 }
-
 function toKey(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
-
 function parseKey(key) {
   const [y, m, d] = key.split("-").map(Number);
   return new Date(y, m - 1, d);
 }
-
 function startOfDay(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
-
 function addDays(date, delta) {
   const d = new Date(date);
   d.setDate(d.getDate() + delta);
   return d;
 }
-
 function formatMonthTitle(year, monthIndex) {
   return `${year}年${monthIndex + 1}月`;
 }
-
 function formatDateLabel(key) {
   const d = parseKey(key);
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 周${WEEK_LABELS[d.getDay()]}`;
 }
-
 function formatDuration(sec) {
   const s = Math.max(0, Math.round(sec || 0));
   const m = Math.floor(s / 60);
@@ -45,54 +43,41 @@ function formatDuration(sec) {
   if (r === 0) return `${m}分钟`;
   return `${m}分${pad(r)}秒`;
 }
-
 function formatCount(n) {
   return `${Number(n) || 0}`;
 }
-
+function maskPhone(phone) {
+  const p = String(phone || "");
+  if (p.length < 7) return p;
+  return `${p.slice(0, 3)}****${p.slice(-4)}`;
+}
 function todayKey() {
   return toKey(startOfDay(new Date()));
 }
-
 function isFutureKey(key) {
   return key > todayKey();
 }
-
 function isCurrentOrPastMonth(year, monthIndex) {
   const now = new Date();
-  return (
-    year < now.getFullYear() ||
-    (year === now.getFullYear() && monthIndex <= now.getMonth())
-  );
+  return year < now.getFullYear() || (year === now.getFullYear() && monthIndex <= now.getMonth());
 }
-
-/** 本月最佳：个数优先；相同则耗时更短者胜 */
 function findMonthBestKey(dates, viewYear, viewMonth) {
   let bestKey = null;
   let best = null;
-
   for (const [key, rec] of Object.entries(dates)) {
     const d = parseKey(key);
     if (d.getFullYear() !== viewYear || d.getMonth() !== viewMonth) continue;
     if (!rec || !(rec.count > 0)) continue;
-
-    if (
-      !best ||
-      rec.count > best.count ||
-      (rec.count === best.count && rec.durationSec < best.durationSec)
-    ) {
+    if (!best || rec.count > best.count || (rec.count === best.count && rec.durationSec < best.durationSec)) {
       best = rec;
       bestKey = key;
     }
   }
-
   return bestKey;
 }
-
 function calcStats(dates, viewYear, viewMonth) {
   const keys = Object.keys(dates).sort();
   const total = keys.length;
-
   let monthSum = 0;
   let monthBest = 0;
   for (const key of keys) {
@@ -102,21 +87,30 @@ function calcStats(dates, viewYear, viewMonth) {
     monthSum += count;
     monthBest = Math.max(monthBest, count);
   }
-
   const today = startOfDay(new Date());
-  const todayKey = toKey(today);
+  const tKey = toKey(today);
   let streak = 0;
-  let cursor = dates[todayKey] ? today : addDays(today, -1);
-
+  let cursor = dates[tKey] ? today : addDays(today, -1);
   while (dates[toKey(cursor)]) {
     streak += 1;
     cursor = addDays(cursor, -1);
   }
-
   return { total, streak, monthBest, monthSum };
 }
 
 const els = {
+  syncSetup: document.getElementById("syncSetup"),
+  tokenInput: document.getElementById("tokenInput"),
+  saveSyncBtn: document.getElementById("saveSyncBtn"),
+  syncShare: document.getElementById("syncShare"),
+  copySyncLinkBtn: document.getElementById("copySyncLinkBtn"),
+  loginPanel: document.getElementById("loginPanel"),
+  phoneInput: document.getElementById("phoneInput"),
+  pinInput: document.getElementById("pinInput"),
+  loginBtn: document.getElementById("loginBtn"),
+  mainApp: document.getElementById("mainApp"),
+  userLine: document.getElementById("userLine"),
+  logoutBtn: document.getElementById("logoutBtn"),
   syncStatus: document.getElementById("syncStatus"),
   syncText: document.getElementById("syncText"),
   monthTitle: document.getElementById("monthTitle"),
@@ -139,12 +133,6 @@ const els = {
   statMonthBest: document.getElementById("statMonthBest"),
   statMonthSum: document.getElementById("statMonthSum"),
   chartPanel: document.getElementById("chartPanel"),
-  syncSetup: document.getElementById("syncSetup"),
-  tokenInput: document.getElementById("tokenInput"),
-  saveSyncBtn: document.getElementById("saveSyncBtn"),
-  syncShare: document.getElementById("syncShare"),
-  copySyncLinkBtn: document.getElementById("copySyncLinkBtn"),
-  syncSetupHint: document.getElementById("syncSetupHint"),
 };
 
 const today = new Date();
@@ -156,7 +144,6 @@ let formDirty = false;
 
 const userConfig = window.CHECKIN_CONFIG || {};
 
-// 支持手机打开同步链接：#sync=TOKEN 或 ?sync=TOKEN
 function bootstrapSyncFromUrl() {
   const hash = new URLSearchParams((location.hash || "").replace(/^#/, ""));
   const query = new URLSearchParams(location.search);
@@ -170,7 +157,7 @@ function bootstrapSyncFromUrl() {
   return false;
 }
 
-const bootstrapped = bootstrapSyncFromUrl();
+bootstrapSyncFromUrl();
 let storage = createStorage(userConfig);
 
 function showToast(message) {
@@ -183,21 +170,28 @@ function showToast(message) {
     setTimeout(() => {
       els.toast.hidden = true;
     }, 250);
-  }, 2200);
+  }, 2400);
 }
 
-function setSyncUI(status) {
+function setSyncUI(status, errorMsg = "") {
   els.syncStatus.classList.remove("is-online", "is-local", "is-error");
   if (status === "online") {
     els.syncStatus.classList.add("is-online");
     els.syncText.textContent = "云端已同步";
   } else if (status === "error") {
     els.syncStatus.classList.add("is-error");
-    els.syncText.textContent = "同步异常";
+    els.syncText.textContent = errorMsg ? `同步异常` : "同步异常";
+    if (errorMsg) els.syncStatus.title = errorMsg;
   } else {
     els.syncStatus.classList.add("is-local");
-    els.syncText.textContent = "仅本地";
+    els.syncText.textContent = "未登录云端";
   }
+}
+
+function showScreen({ setup = false, login = false, main = false }) {
+  els.syncSetup.hidden = !setup;
+  els.loginPanel.hidden = !login;
+  els.mainApp.hidden = !main;
 }
 
 function readForm() {
@@ -205,11 +199,7 @@ function readForm() {
   const minutes = Math.max(0, Math.round(Number(els.minInput.value) || 0));
   let seconds = Math.max(0, Math.round(Number(els.secInput.value) || 0));
   if (seconds > 59) seconds = 59;
-  return {
-    count,
-    durationSec: minutes * 60 + seconds,
-    note: els.noteInput.value.trim(),
-  };
+  return { count, durationSec: minutes * 60 + seconds, note: els.noteInput.value.trim() };
 }
 
 function fillForm(rec) {
@@ -242,18 +232,16 @@ function updateMonthNav() {
     viewMonth === 11 ? 0 : viewMonth + 1
   );
   els.nextMonth.disabled = !canGoNext;
-  els.nextMonth.setAttribute("aria-disabled", String(!canGoNext));
 }
 
 function renderCalendar(dates) {
   els.monthTitle.textContent = formatMonthTitle(viewYear, viewMonth);
   els.calendarGrid.innerHTML = "";
   updateMonthNav();
-
   const first = new Date(viewYear, viewMonth, 1);
   const startOffset = (first.getDay() + 6) % 7;
   const gridStart = addDays(first, -startOffset);
-  const today = todayKey();
+  const tKey = todayKey();
   const bestKey = findMonthBestKey(dates, viewYear, viewMonth);
 
   for (let i = 0; i < 42; i += 1) {
@@ -268,43 +256,17 @@ function renderCalendar(dates) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "day";
-    btn.dataset.date = key;
-    btn.setAttribute("role", "gridcell");
-
-    let label = formatDateLabel(key);
-    if (future) label += "，未来日期不可打卡";
-    if (checked) {
-      label += `，${rec.count}个，${formatDuration(rec.durationSec)}`;
-    }
-    if (isBest) label += "，本月最佳";
-    btn.setAttribute("aria-label", label);
-
     if (!inMonth) btn.classList.add("is-other");
     if (future) btn.classList.add("is-future");
-    if (key === today) btn.classList.add("is-today");
+    if (key === tKey) btn.classList.add("is-today");
     if (key === selectedKey && !future) btn.classList.add("is-selected");
     if (checked) btn.classList.add("is-checked");
     if (isBest) btn.classList.add("is-best");
-    if (rec?.note && !future) btn.classList.add("has-note");
-
     btn.disabled = future;
-    btn.innerHTML = `
-      <span class="day-num">${date.getDate()}</span>
-      ${isBest ? THUMB_SVG : '<span class="day-mark"></span>'}
-    `;
-    if (!future) {
-      btn.addEventListener("click", () => onDaySelect(key));
-    }
+    btn.innerHTML = `<span class="day-num">${date.getDate()}</span>${isBest ? THUMB_SVG : '<span class="day-mark"></span>'}`;
+    if (!future) btn.addEventListener("click", () => onDaySelect(key));
     els.calendarGrid.appendChild(btn);
   }
-}
-
-function setFormEnabled(enabled) {
-  els.countInput.disabled = !enabled;
-  els.minInput.disabled = !enabled;
-  els.secInput.disabled = !enabled;
-  els.noteInput.disabled = !enabled;
-  els.saveBtn.disabled = !enabled;
 }
 
 function renderRecord(dates) {
@@ -312,7 +274,6 @@ function renderRecord(dates) {
     selectedKey = todayKey();
     formDirty = false;
   }
-
   const rec = dates[selectedKey];
   const isToday = selectedKey === todayKey();
   const isBest =
@@ -323,34 +284,29 @@ function renderRecord(dates) {
   els.recordTitle.textContent = isToday
     ? `今日跳绳${isBest ? " · 本月最佳" : ""}`
     : `${formatDateLabel(selectedKey)}${isBest ? " · 本月最佳" : ""}`;
-
   if (!formDirty) fillForm(rec || null);
-  setFormEnabled(true);
-
   els.saveBtnText.textContent = rec ? "更新记录" : "保存打卡";
   els.saveBtn.classList.toggle("is-done", Boolean(rec));
   els.deleteBtn.hidden = !rec;
-
-  if (rec) {
-    els.actionHint.textContent = `${rec.count} 个 · ${formatDuration(rec.durationSec)} · 可修改后更新`;
-  } else {
-    els.actionHint.textContent = "只能打卡今天及之前；填写后保存";
-  }
+  els.actionHint.textContent = rec
+    ? `${rec.count} 个 · ${formatDuration(rec.durationSec)} · 可修改后更新`
+    : "只能打卡今天及之前；填写后保存";
 }
 
 function renderChart(dates) {
-  const bestKey = findMonthBestKey(dates, viewYear, viewMonth);
   renderLineChart(els.chartPanel, {
     dates,
     viewYear,
     viewMonth,
     selectedKey,
-    bestKey,
+    bestKey: findMonthBestKey(dates, viewYear, viewMonth),
     onSelect: onDaySelect,
   });
 }
 
 function render(dates = storage.getData().dates) {
+  if (!storage.isLoggedIn()) return;
+  els.userLine.textContent = `账号 ${maskPhone(storage.getPhone())}`;
   if (isFutureKey(selectedKey)) {
     selectedKey = todayKey();
     formDirty = false;
@@ -376,39 +332,67 @@ function onDaySelect(key) {
 }
 
 async function onSave() {
-  if (isFutureKey(selectedKey)) {
-    showToast("不能给未来日期打卡");
-    return;
-  }
   const form = readForm();
   if (!Number.isFinite(form.count) || form.count <= 0) {
     showToast("请填写跳绳个数");
-    els.countInput.focus();
     return;
   }
   if (form.durationSec <= 0) {
     showToast("请填写耗时");
-    els.minInput.focus();
     return;
   }
-
   await storage.upsert(selectedKey, form);
   formDirty = false;
-  showToast("打卡已保存");
+  showToast("打卡已保存并同步");
   render();
 }
 
 async function onDelete() {
-  if (isFutureKey(selectedKey)) {
-    showToast("不能修改未来日期");
-    return;
-  }
-  const ok = window.confirm(`确定删除 ${formatDateLabel(selectedKey)} 的跳绳记录？`);
+  const ok = window.confirm(`确定删除 ${formatDateLabel(selectedKey)} 的记录？`);
   if (!ok) return;
   await storage.remove(selectedKey);
   formDirty = false;
-  showToast("已删除该日记录");
+  showToast("已删除并同步");
   render();
+}
+
+function bindStorageEvents() {
+  storage.onChange((data, status, errorMsg) => {
+    setSyncUI(status, errorMsg || storage.getLastError?.() || "");
+    if (status === "error" && errorMsg) {
+      // 不刷屏 toast，只在 title 里保留详情
+    }
+    if (storage.isLoggedIn()) {
+      if (!formDirty) render(data.dates);
+      else {
+        renderStats(data.dates);
+        renderCalendar(data.dates);
+        renderChart(data.dates);
+      }
+    }
+  });
+}
+
+function enterMain() {
+  showScreen({ main: true });
+  setSyncUI("online");
+  render();
+}
+
+function enterLogin() {
+  showScreen({ login: true });
+  setSyncUI("local");
+}
+
+function enterSetup() {
+  showScreen({ setup: true });
+  setSyncUI("local");
+}
+
+function rebuildStorage() {
+  storage.destroy?.();
+  storage = createStorage(userConfig);
+  bindStorageEvents();
 }
 
 els.prevMonth.addEventListener("click", () => {
@@ -419,7 +403,6 @@ els.prevMonth.addEventListener("click", () => {
   }
   render();
 });
-
 els.nextMonth.addEventListener("click", () => {
   const nextYear = viewMonth === 11 ? viewYear + 1 : viewYear;
   const nextMonth = viewMonth === 11 ? 0 : viewMonth + 1;
@@ -431,139 +414,113 @@ els.nextMonth.addEventListener("click", () => {
   viewMonth = nextMonth;
   render();
 });
-
 els.todayBtn.addEventListener("click", () => {
-  goToToday();
-});
-
-function goToToday() {
   const now = new Date();
   viewYear = now.getFullYear();
   viewMonth = now.getMonth();
   selectedKey = todayKey();
   formDirty = false;
   render();
-}
-
+});
 els.saveBtn.addEventListener("click", () => {
-  onSave().catch((err) => {
-    console.error(err);
-    showToast(err.message || "保存失败，请重试");
-  });
+  onSave().catch((err) => showToast(err.message || "保存失败"));
 });
-
 els.deleteBtn.addEventListener("click", () => {
-  onDelete().catch((err) => {
-    console.error(err);
-    showToast("删除失败，请重试");
-  });
+  onDelete().catch((err) => showToast(err.message || "删除失败"));
 });
-
 for (const input of [els.countInput, els.minInput, els.secInput, els.noteInput]) {
   input.addEventListener("input", () => {
     formDirty = true;
   });
 }
 
-storage.onChange((data, status) => {
-  setSyncUI(status);
-  if (!formDirty) render(data.dates);
-  else {
-    renderStats(data.dates);
-    renderCalendar(data.dates);
-    renderChart(data.dates);
-  }
-});
-
-function updateSyncSetupUI() {
-  const ready = isSyncReady(userConfig);
-  els.syncSetup.hidden = ready;
-  if (ready) {
-    els.syncShare.hidden = false;
-  }
-}
-
-function buildSyncLink() {
-  const cfg = storage.config || {};
-  const token = cfg.githubToken || els.tokenInput.value.trim();
-  const gistId = cfg.gistId || userConfig.gistId || "";
-  const base = `${location.origin}${location.pathname}`;
-  return `${base}#gist=${encodeURIComponent(gistId)}&sync=${encodeURIComponent(token)}`;
-}
-
 els.saveSyncBtn.addEventListener("click", async () => {
   const token = els.tokenInput.value.trim();
   if (!token.startsWith("gh") || token.length < 20) {
     showToast("请粘贴有效的 GitHub Token");
-    els.tokenInput.focus();
     return;
   }
-  saveConfigOverride({
-    githubToken: token,
-    gistId: userConfig.gistId,
-  });
-  showToast("已保存，正在连接云端…");
-  storage.destroy?.();
-  storage = createStorage(userConfig);
-  storage.onChange((data, status) => {
-    setSyncUI(status);
-    if (!formDirty) render(data.dates);
-  });
-  const result = await storage.init();
-  if (result.mode === "online") {
-    setSyncUI("online");
-    els.syncSetup.hidden = true;
-    els.syncShare.hidden = false;
-    showToast("云端同步已开启，请复制链接到手机打开");
-  } else {
-    setSyncUI("error");
-    showToast(result.message || "连接失败，请检查 Token 是否勾选了 gist");
-  }
-  render();
+  saveConfigOverride({ githubToken: token, gistId: userConfig.gistId });
+  rebuildStorage();
+  els.syncShare.hidden = false;
+  showToast("云端配置已保存，请登录手机号");
+  enterLogin();
 });
 
 els.copySyncLinkBtn.addEventListener("click", async () => {
-  const link = buildSyncLink();
+  const cfg = storage.config || {};
+  const token = cfg.githubToken || els.tokenInput.value.trim();
+  const gistId = cfg.gistId || userConfig.gistId || "";
+  const link = `${location.origin}${location.pathname}#gist=${encodeURIComponent(gistId)}&sync=${encodeURIComponent(token)}`;
   try {
     await navigator.clipboard.writeText(link);
-    showToast("同步链接已复制，请在手机打开");
+    showToast("链接已复制，请在手机打开");
   } catch {
-    window.prompt("请手动复制此链接到手机打开：", link);
+    window.prompt("请复制此链接到手机：", link);
   }
 });
 
-updateSyncSetupUI();
-// 云端模式先等首拉完成再渲染，避免手机先闪出旧本地数据
-if (!storage.isCloud) {
-  render();
-} else {
-  setSyncUI("online");
-  els.syncText.textContent = "同步中…";
+els.loginBtn.addEventListener("click", async () => {
+  const phone = els.phoneInput.value.trim();
+  const pin = els.pinInput.value.trim();
+  if (!isValidPhone(phone)) {
+    showToast("请输入11位手机号");
+    return;
+  }
+  if (!isValidPin(pin)) {
+    showToast("密码需为4-8位数字");
+    return;
+  }
+  els.loginBtn.disabled = true;
+  try {
+    await storage.login(phone, pin);
+    showToast("登录成功，数据已同步");
+    enterMain();
+  } catch (err) {
+    showToast(err.message || "登录失败");
+  } finally {
+    els.loginBtn.disabled = false;
+  }
+});
+
+els.pinInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") els.loginBtn.click();
+});
+
+els.logoutBtn.addEventListener("click", () => {
+  storage.logout();
+  formDirty = false;
+  showToast("已退出登录");
+  enterLogin();
+});
+
+bindStorageEvents();
+
+async function boot() {
+  if (!isSyncReady(userConfig)) {
+    enterSetup();
+    showToast("请先配置云端 Token");
+    return;
+  }
+
+  // 已有 token：显示登录；若有会话则自动登录
+  if (storage.isLoggedIn()) {
+    showScreen({ main: true });
+    setSyncUI("online");
+    els.syncText.textContent = "同步中…";
+    const result = await storage.init();
+    if (result.mode === "online") {
+      setSyncUI("online");
+      enterMain();
+      showToast("欢迎回来");
+    } else {
+      showToast(result.message || "请重新登录");
+      enterLogin();
+    }
+    return;
+  }
+
+  enterLogin();
 }
 
-storage.init().then((result) => {
-  const cleared = new URLSearchParams(location.search).get("cleared") === "1";
-  if (cleared) {
-    history.replaceState({}, "", location.pathname);
-    showToast("本地数据已清除");
-  } else if (bootstrapped && result.mode === "online") {
-    showToast("已从同步链接开启云端同步");
-  } else if (result.mode === "local") {
-    showToast("请先完成上方「开启多端同步」");
-  } else if (result.mode === "online") {
-    showToast("云端同步已开启");
-  } else {
-    showToast(result.message || "云端连接失败，已使用本地数据");
-  }
-
-  if (result.mode === "local") setSyncUI("local");
-  else if (result.mode === "online") setSyncUI("online");
-  else setSyncUI("error");
-
-  updateSyncSetupUI();
-  if (result.mode === "online") {
-    els.syncSetup.hidden = true;
-    els.syncShare.hidden = false;
-  }
-  render();
-});
+boot();
