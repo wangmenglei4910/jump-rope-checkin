@@ -1,4 +1,4 @@
-import { createStorage } from "./storage.js";
+import { createStorage, saveConfigOverride, isSyncReady } from "./storage.js";
 import { renderLineChart } from "./chart.js";
 
 const WEEK_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
@@ -139,6 +139,12 @@ const els = {
   statMonthBest: document.getElementById("statMonthBest"),
   statMonthSum: document.getElementById("statMonthSum"),
   chartPanel: document.getElementById("chartPanel"),
+  syncSetup: document.getElementById("syncSetup"),
+  tokenInput: document.getElementById("tokenInput"),
+  saveSyncBtn: document.getElementById("saveSyncBtn"),
+  syncShare: document.getElementById("syncShare"),
+  copySyncLinkBtn: document.getElementById("copySyncLinkBtn"),
+  syncSetupHint: document.getElementById("syncSetupHint"),
 };
 
 const today = new Date();
@@ -149,7 +155,23 @@ let toastTimer = null;
 let formDirty = false;
 
 const userConfig = window.CHECKIN_CONFIG || {};
-const storage = createStorage(userConfig);
+
+// 支持手机打开同步链接：#sync=TOKEN 或 ?sync=TOKEN
+function bootstrapSyncFromUrl() {
+  const hash = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  const query = new URLSearchParams(location.search);
+  const token = (hash.get("sync") || query.get("sync") || "").trim();
+  const gistId = (hash.get("gist") || query.get("gist") || userConfig.gistId || "").trim();
+  if (token && token.startsWith("gh")) {
+    saveConfigOverride({ githubToken: token, gistId: gistId || userConfig.gistId });
+    history.replaceState({}, "", location.pathname);
+    return true;
+  }
+  return false;
+}
+
+const bootstrapped = bootstrapSyncFromUrl();
+let storage = createStorage(userConfig);
 
 function showToast(message) {
   els.toast.hidden = false;
@@ -453,6 +475,64 @@ storage.onChange((data, status) => {
   }
 });
 
+function updateSyncSetupUI() {
+  const ready = isSyncReady(userConfig);
+  els.syncSetup.hidden = ready;
+  if (ready) {
+    els.syncShare.hidden = false;
+  }
+}
+
+function buildSyncLink() {
+  const cfg = storage.config || {};
+  const token = cfg.githubToken || els.tokenInput.value.trim();
+  const gistId = cfg.gistId || userConfig.gistId || "";
+  const base = `${location.origin}${location.pathname}`;
+  return `${base}#gist=${encodeURIComponent(gistId)}&sync=${encodeURIComponent(token)}`;
+}
+
+els.saveSyncBtn.addEventListener("click", async () => {
+  const token = els.tokenInput.value.trim();
+  if (!token.startsWith("gh") || token.length < 20) {
+    showToast("请粘贴有效的 GitHub Token");
+    els.tokenInput.focus();
+    return;
+  }
+  saveConfigOverride({
+    githubToken: token,
+    gistId: userConfig.gistId,
+  });
+  showToast("已保存，正在连接云端…");
+  storage.destroy?.();
+  storage = createStorage(userConfig);
+  storage.onChange((data, status) => {
+    setSyncUI(status);
+    if (!formDirty) render(data.dates);
+  });
+  const result = await storage.init();
+  if (result.mode === "online") {
+    setSyncUI("online");
+    els.syncSetup.hidden = true;
+    els.syncShare.hidden = false;
+    showToast("云端同步已开启，请复制链接到手机打开");
+  } else {
+    setSyncUI("error");
+    showToast(result.message || "连接失败，请检查 Token 是否勾选了 gist");
+  }
+  render();
+});
+
+els.copySyncLinkBtn.addEventListener("click", async () => {
+  const link = buildSyncLink();
+  try {
+    await navigator.clipboard.writeText(link);
+    showToast("同步链接已复制，请在手机打开");
+  } catch {
+    window.prompt("请手动复制此链接到手机打开：", link);
+  }
+});
+
+updateSyncSetupUI();
 render();
 
 storage.init().then((result) => {
@@ -460,17 +540,24 @@ storage.init().then((result) => {
   if (cleared) {
     history.replaceState({}, "", location.pathname);
     showToast("本地数据已清除");
+  } else if (bootstrapped && result.mode === "online") {
+    showToast("已从同步链接开启云端同步");
   } else if (result.mode === "local") {
-    showToast("当前为本地模式，配置 Firebase 后可多端同步");
+    showToast("请先完成上方「开启多端同步」");
   } else if (result.mode === "online") {
     showToast("云端同步已开启");
   } else {
-    showToast("云端连接失败，已使用本地数据");
+    showToast(result.message || "云端连接失败，已使用本地数据");
   }
 
   if (result.mode === "local") setSyncUI("local");
   else if (result.mode === "online") setSyncUI("online");
   else setSyncUI("error");
 
+  updateSyncSetupUI();
+  if (result.mode === "online") {
+    els.syncSetup.hidden = true;
+    els.syncShare.hidden = false;
+  }
   if (!formDirty) render();
 });

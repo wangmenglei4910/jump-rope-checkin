@@ -1,21 +1,13 @@
 /**
  * 跳绳打卡数据存储层
- * - 已配置 Firebase：云端实时同步（多端共享）
+ * - 已配置 GitHub Gist + Token：云端同步（多端共享）
  * - 未配置：localStorage 本地存储（仅当前浏览器）
  *
  * 单日记录：{ count, durationSec, note, at }
  */
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import {
-  getFirestore,
-  doc,
-  getDoc,
-  setDoc,
-  onSnapshot,
-} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
-
 const LOCAL_KEY = "jump-rope-checkin-data-v1";
+const CONFIG_OVERRIDE_KEY = "jump-rope-sync-config-v1";
 
 function emptyData() {
   return { dates: {}, updatedAt: 0 };
@@ -43,22 +35,9 @@ function normalizeDates(dates) {
   return out;
 }
 
-function isFirebaseConfigured(cfg) {
-  return Boolean(
-    cfg &&
-      cfg.apiKey &&
-      cfg.apiKey !== "YOUR_API_KEY" &&
-      cfg.projectId &&
-      cfg.projectId !== "YOUR_PROJECT_ID" &&
-      cfg.appId &&
-      cfg.appId !== "YOUR_APP_ID"
-  );
-}
-
 function loadLocal() {
   try {
     const raw = localStorage.getItem(LOCAL_KEY);
-    // 兼容旧版每日打卡 key
     const legacy = !raw ? localStorage.getItem("daily-checkin-data-v1") : null;
     const source = raw || legacy;
     if (!source) return emptyData();
@@ -76,14 +55,118 @@ function saveLocal(data) {
   localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
 }
 
+function loadConfigOverride() {
+  try {
+    const raw = localStorage.getItem(CONFIG_OVERRIDE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) || {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveConfigOverride(partial) {
+  const next = { ...loadConfigOverride(), ...partial };
+  localStorage.setItem(CONFIG_OVERRIDE_KEY, JSON.stringify(next));
+  return next;
+}
+
+export function clearConfigOverride() {
+  localStorage.removeItem(CONFIG_OVERRIDE_KEY);
+}
+
+function resolveConfig(userConfig = {}) {
+  const override = loadConfigOverride();
+  return {
+    gistId: String(override.gistId || userConfig.gistId || "").trim(),
+    githubToken: String(override.githubToken || userConfig.githubToken || "").trim(),
+    docId: userConfig.docId || "default",
+  };
+}
+
+function isCloudConfigured(cfg) {
+  return Boolean(
+    cfg.gistId &&
+      cfg.gistId.length >= 10 &&
+      cfg.githubToken &&
+      cfg.githubToken.startsWith("gh") &&
+      cfg.githubToken.length > 20
+  );
+}
+
+async function fetchGistFile(gistId, token) {
+  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`读取云端失败(${res.status}): ${text.slice(0, 120)}`);
+  }
+  const gist = await res.json();
+  const files = gist.files || {};
+  const file =
+    files["checkins.json"] ||
+    files[Object.keys(files).find((k) => k.endsWith(".json"))] ||
+    files[Object.keys(files)[0]];
+  if (!file || !file.content) return emptyData();
+  try {
+    const parsed = JSON.parse(file.content);
+    return {
+      dates: normalizeDates(parsed.dates),
+      updatedAt: Number(parsed.updatedAt) || 0,
+    };
+  } catch {
+    return emptyData();
+  }
+}
+
+async function writeGistFile(gistId, token, data) {
+  const body = {
+    files: {
+      "checkins.json": {
+        content: JSON.stringify(
+          {
+            dates: normalizeDates(data.dates),
+            updatedAt: Number(data.updatedAt) || Date.now(),
+          },
+          null,
+          2
+        ),
+      },
+    },
+  };
+  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+    method: "PATCH",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`写入云端失败(${res.status}): ${text.slice(0, 120)}`);
+  }
+}
+
+function todayStr() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function createStorage(userConfig = {}) {
-  const firebaseConfig = userConfig.firebase || {};
-  const collectionName = userConfig.collection || "checkins";
-  const docId = userConfig.docId || "default";
-  const useCloud = isFirebaseConfigured(firebaseConfig);
+  const cfg = resolveConfig(userConfig);
+  const useCloud = isCloudConfigured(cfg);
 
   let data = loadLocal();
-  let unsubscribe = null;
+  let pollTimer = null;
   const listeners = new Set();
 
   function notify(status) {
@@ -106,8 +189,8 @@ export function createStorage(userConfig = {}) {
     };
     saveLocal(data);
 
-    if (useCloud && db && docRef) {
-      await setDoc(docRef, data, { merge: true });
+    if (useCloud) {
+      await writeGistFile(cfg.gistId, cfg.githubToken, data);
     }
 
     notify(useCloud ? "online" : "local");
@@ -115,12 +198,7 @@ export function createStorage(userConfig = {}) {
   }
 
   async function upsert(dateKey, record) {
-    const today = (() => {
-      const d = new Date();
-      const p = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    })();
-    if (dateKey > today) {
+    if (dateKey > todayStr()) {
       throw new Error("不能给未来日期打卡");
     }
     const next = normalizeRecord({ ...record, at: Date.now() });
@@ -132,12 +210,7 @@ export function createStorage(userConfig = {}) {
   }
 
   async function remove(dateKey) {
-    const today = (() => {
-      const d = new Date();
-      const p = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    })();
-    if (dateKey > today) {
+    if (dateKey > todayStr()) {
       throw new Error("不能修改未来日期");
     }
     const dates = { ...data.dates };
@@ -145,8 +218,20 @@ export function createStorage(userConfig = {}) {
     return persist({ dates });
   }
 
-  let db = null;
-  let docRef = null;
+  async function pullRemote() {
+    if (!useCloud) return data;
+    const remote = await fetchGistFile(cfg.gistId, cfg.githubToken);
+    const remoteUpdated = Number(remote.updatedAt) || 0;
+    const localUpdated = Number(data.updatedAt) || 0;
+    if (remoteUpdated >= localUpdated) {
+      data = remote;
+      saveLocal(data);
+    } else if (Object.keys(data.dates).length > 0) {
+      await writeGistFile(cfg.gistId, cfg.githubToken, data);
+    }
+    notify("online");
+    return data;
+  }
 
   async function init() {
     if (!useCloud) {
@@ -155,46 +240,11 @@ export function createStorage(userConfig = {}) {
     }
 
     try {
-      const app = initializeApp(firebaseConfig);
-      db = getFirestore(app);
-      docRef = doc(db, collectionName, docId);
-
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const remote = snap.data() || {};
-        const remoteDates = normalizeDates(remote.dates);
-        const remoteUpdated = Number(remote.updatedAt) || 0;
-        const localUpdated = Number(data.updatedAt) || 0;
-
-        if (remoteUpdated >= localUpdated) {
-          data = { dates: remoteDates, updatedAt: remoteUpdated };
-        } else {
-          await setDoc(docRef, data, { merge: true });
-        }
-        saveLocal(data);
-      } else if (Object.keys(data.dates).length > 0) {
-        await setDoc(docRef, data);
-      } else {
-        await setDoc(docRef, emptyData());
-        data = emptyData();
-      }
-
-      unsubscribe = onSnapshot(
-        docRef,
-        (live) => {
-          if (!live.exists()) return;
-          const remote = live.data() || {};
-          data = {
-            dates: normalizeDates(remote.dates),
-            updatedAt: Number(remote.updatedAt) || Date.now(),
-          };
-          saveLocal(data);
-          notify("online");
-        },
-        () => notify("error")
-      );
-
-      notify("online");
+      await pullRemote();
+      // 轮询实现多端接近实时同步
+      pollTimer = setInterval(() => {
+        pullRemote().catch(() => notify("error"));
+      }, 8000);
       return { mode: "online", message: "云端同步已开启" };
     } catch (err) {
       console.error(err);
@@ -204,7 +254,7 @@ export function createStorage(userConfig = {}) {
   }
 
   function destroy() {
-    if (unsubscribe) unsubscribe();
+    if (pollTimer) clearInterval(pollTimer);
   }
 
   return {
@@ -214,6 +264,12 @@ export function createStorage(userConfig = {}) {
     getData,
     upsert,
     remove,
+    pullRemote,
     isCloud: useCloud,
+    config: cfg,
   };
+}
+
+export function isSyncReady(userConfig = {}) {
+  return isCloudConfigured(resolveConfig(userConfig));
 }

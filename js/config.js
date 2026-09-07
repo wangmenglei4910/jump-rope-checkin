@@ -1,20 +1,14 @@
 /**
- * 打卡配置（部署前请填写 Firebase 信息）
- * 未填写时会自动使用浏览器本地存储，仅当前设备有效。
+ * 跳绳打卡云端同步配置
  *
- * 多端同步：所有设备打开同一个网页，并使用相同的 firebase + docId。
+ * 使用 GitHub Gist 存储，电脑和手机打开同一网址即可共享数据。
+ * githubToken 需要「gist」权限的 Personal Access Token（不要勾选 repo）。
  */
 window.CHECKIN_CONFIG = {
-  // 改成你的私密房间号（不要用太简单的词）
-  docId: "my-checkin-room",
-  collection: "checkins",
+  // 已创建的数据仓库（不要改）
+  gistId: "28cec0bd06549afc96073735cb97243d",
 
-  firebase: {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_PROJECT_ID.appspot.com",
-    messagingSenderId: "YOUR_SENDER_ID",
-    appId: "YOUR_APP_ID",
-  },
+  // 在下面填入你的 GitHub Token（以 ghp_ 或 github_pat_ 开头）
+  // 创建地址：https://github.com/settings/tokens/new?scopes=gist&description=jump-rope-checkin-sync
+  githubToken: "YOUR_GITHUB_TOKEN",
 };

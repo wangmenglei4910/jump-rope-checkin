@@ -27,6 +27,34 @@
       </div>
     </header>
 
+    <section class="sync-setup" id="syncSetup" hidden>
+      <h3 class="sync-setup-title">开启多端同步</h3>
+      <p class="sync-setup-desc">
+        按下面两步完成后，手机和电脑会共享同一份跳绳数据。
+      </p>
+      <ol class="sync-steps">
+        <li>
+          打开
+          <a href="https://github.com/settings/tokens/new?scopes=gist&description=jump-rope-checkin-sync" target="_blank" rel="noopener">创建 Token 页面</a>
+          ，Note 填 <code>jump-rope-sync</code>，只勾选 <code>gist</code>，生成后复制。
+        </li>
+        <li>把 Token 粘贴到下方并保存（不要发给别人）。</li>
+      </ol>
+      <label class="field">
+        <span class="field-label">GitHub Token</span>
+        <input id="tokenInput" class="field-input" type="password" autocomplete="off" placeholder="ghp_ 或 github_pat_ 开头" />
+      </label>
+      <button type="button" class="checkin-btn" id="saveSyncBtn">
+        <span class="checkin-btn-icon" aria-hidden="true">✓</span>
+        <span>保存并开启同步</span>
+      </button>
+      <div class="sync-share" id="syncShare" hidden>
+        <p class="sync-setup-desc">手机用这个链接打开一次即可自动同步（含密钥，勿转发）：</p>
+        <button type="button" class="today-btn" id="copySyncLinkBtn" style="width:100%">复制手机同步链接</button>
+      </div>
+      <p class="action-hint" id="syncSetupHint">只勾选 gist，不要勾选 repo</p>
+    </section>
+
     <section class="stats" aria-label="跳绳统计">
       <div class="stat">
         <span class="stat-value" id="statTotal">0</span>

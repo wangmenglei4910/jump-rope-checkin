@@ -156,6 +156,69 @@ body {
   background: #ef4444;
 }
 
+.sync-setup {
+  margin-bottom: 18px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: rgba(255, 247, 237, 0.92);
+  border: 1px solid rgba(194, 65, 12, 0.18);
+  box-shadow: var(--shadow);
+  animation: fade-up 0.55s ease both;
+}
+
+.sync-setup-title {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  color: #9a3412;
+}
+
+.sync-setup-desc {
+  margin: 0 0 10px;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.sync-steps {
+  margin: 0 0 14px;
+  padding-left: 1.2em;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.sync-steps a {
+  color: var(--teal-deep);
+  font-weight: 600;
+}
+
+.sync-steps code {
+  font-size: 0.8em;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(15, 118, 110, 0.1);
+}
+
+.sync-setup .field {
+  margin-bottom: 12px;
+}
+
+.sync-setup .checkin-btn {
+  background: linear-gradient(135deg, #c2410c, #ea580c);
+  box-shadow: 0 12px 28px rgba(194, 65, 12, 0.25);
+}
+
+.sync-share {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(194, 65, 12, 0.2);
+}
+
+.sync-share[hidden] {
+  display: none;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
