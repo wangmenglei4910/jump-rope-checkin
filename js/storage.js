@@ -8,6 +8,7 @@
 
 const LOCAL_KEY = "jump-rope-checkin-data-v1";
 const CONFIG_OVERRIDE_KEY = "jump-rope-sync-config-v1";
+const POLL_MS = 3000;
 
 function emptyData() {
   return { dates: {}, updatedAt: 0 };
@@ -33,6 +34,38 @@ function normalizeDates(dates) {
     if (rec && rec.count > 0) out[key] = rec;
   }
   return out;
+}
+
+/** 按每天记录的 at 合并，避免整包时间戳互相覆盖 */
+function mergeData(a, b) {
+  const dates = {};
+  const keys = new Set([
+    ...Object.keys(a?.dates || {}),
+    ...Object.keys(b?.dates || {}),
+  ]);
+  for (const key of keys) {
+    const left = a?.dates?.[key];
+    const right = b?.dates?.[key];
+    if (left && right) {
+      dates[key] = (Number(left.at) || 0) >= (Number(right.at) || 0) ? left : right;
+    } else {
+      dates[key] = left || right;
+    }
+  }
+  return {
+    dates: normalizeDates(dates),
+    updatedAt: Math.max(Number(a?.updatedAt) || 0, Number(b?.updatedAt) || 0, Date.now()),
+  };
+}
+
+function dataFingerprint(data) {
+  const keys = Object.keys(data?.dates || {}).sort();
+  return keys
+    .map((k) => {
+      const r = data.dates[k];
+      return `${k}:${r.count}:${r.durationSec}:${r.at}:${r.note || ""}`;
+    })
+    .join("|");
 }
 
 function loadLocal() {
@@ -94,19 +127,17 @@ function isCloudConfigured(cfg) {
   );
 }
 
-async function fetchGistFile(gistId, token) {
-  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`读取云端失败(${res.status}): ${text.slice(0, 120)}`);
-  }
-  const gist = await res.json();
+function authHeaders(token) {
+  return {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "X-GitHub-Api-Version": "2022-11-28",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+  };
+}
+
+function parseGistPayload(gist) {
   const files = gist.files || {};
   const file =
     files["checkins.json"] ||
@@ -124,34 +155,50 @@ async function fetchGistFile(gistId, token) {
   }
 }
 
+async function fetchGistFile(gistId, token) {
+  // 防浏览器 / 中间层缓存，附带时间戳
+  const url = `https://api.github.com/gists/${gistId}?ts=${Date.now()}`;
+  const res = await fetch(url, {
+    method: "GET",
+    cache: "no-store",
+    headers: authHeaders(token),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`读取云端失败(${res.status}): ${text.slice(0, 120)}`);
+  }
+  return parseGistPayload(await res.json());
+}
+
 async function writeGistFile(gistId, token, data) {
-  const body = {
-    files: {
-      "checkins.json": {
-        content: JSON.stringify(
-          {
-            dates: normalizeDates(data.dates),
-            updatedAt: Number(data.updatedAt) || Date.now(),
-          },
-          null,
-          2
-        ),
-      },
-    },
+  const payload = {
+    dates: normalizeDates(data.dates),
+    updatedAt: Number(data.updatedAt) || Date.now(),
   };
   const res = await fetch(`https://api.github.com/gists/${gistId}`, {
     method: "PATCH",
+    cache: "no-store",
     headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
+      ...authHeaders(token),
       "Content-Type": "application/json",
-      "X-GitHub-Api-Version": "2022-11-28",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      files: {
+        "checkins.json": {
+          content: JSON.stringify(payload, null, 2),
+        },
+      },
+    }),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`写入云端失败(${res.status}): ${text.slice(0, 120)}`);
+  }
+  // 用响应体作为权威结果，避免紧接着 GET 读到旧缓存
+  try {
+    return parseGistPayload(await res.json());
+  } catch {
+    return payload;
   }
 }
 
@@ -167,6 +214,8 @@ export function createStorage(userConfig = {}) {
 
   let data = loadLocal();
   let pollTimer = null;
+  let pulling = false;
+  let writing = false;
   const listeners = new Set();
 
   function notify(status) {
@@ -183,18 +232,28 @@ export function createStorage(userConfig = {}) {
   }
 
   async function persist(next) {
-    data = {
-      dates: normalizeDates(next.dates),
-      updatedAt: Date.now(),
-    };
-    saveLocal(data);
+    writing = true;
+    try {
+      data = {
+        dates: normalizeDates(next.dates),
+        updatedAt: Date.now(),
+      };
+      saveLocal(data);
 
-    if (useCloud) {
-      await writeGistFile(cfg.gistId, cfg.githubToken, data);
+      if (useCloud) {
+        const confirmed = await writeGistFile(cfg.gistId, cfg.githubToken, data);
+        data = {
+          dates: normalizeDates(confirmed.dates),
+          updatedAt: Number(confirmed.updatedAt) || data.updatedAt,
+        };
+        saveLocal(data);
+      }
+
+      notify(useCloud ? "online" : "local");
+      return data;
+    } finally {
+      writing = false;
     }
-
-    notify(useCloud ? "online" : "local");
-    return data;
   }
 
   async function upsert(dateKey, record) {
@@ -218,19 +277,56 @@ export function createStorage(userConfig = {}) {
     return persist({ dates });
   }
 
-  async function pullRemote() {
+  async function pullRemote({ force = false } = {}) {
     if (!useCloud) return data;
-    const remote = await fetchGistFile(cfg.gistId, cfg.githubToken);
-    const remoteUpdated = Number(remote.updatedAt) || 0;
-    const localUpdated = Number(data.updatedAt) || 0;
-    if (remoteUpdated >= localUpdated) {
-      data = remote;
+    if (pulling || writing) return data;
+    pulling = true;
+    try {
+      let remote = await fetchGistFile(cfg.gistId, cfg.githubToken);
+
+      // Gist 偶发延迟：若本地明显更新，短暂重试读取
+      const localFp = dataFingerprint(data);
+      const remoteFp = dataFingerprint(remote);
+      if (force && localFp && remoteFp !== localFp && (data.updatedAt || 0) > (remote.updatedAt || 0)) {
+        await new Promise((r) => setTimeout(r, 600));
+        remote = await fetchGistFile(cfg.gistId, cfg.githubToken);
+      }
+
+      const merged = mergeData(data, remote);
+      const mergedFp = dataFingerprint(merged);
+      const remoteNowFp = dataFingerprint(remote);
+
+      // 远程缺了本地更新过的天：补写云端
+      if (mergedFp !== remoteNowFp) {
+        const confirmed = await writeGistFile(cfg.gistId, cfg.githubToken, {
+          ...merged,
+          updatedAt: Date.now(),
+        });
+        data = {
+          dates: normalizeDates(confirmed.dates),
+          updatedAt: Number(confirmed.updatedAt) || Date.now(),
+        };
+      } else {
+        data = {
+          dates: normalizeDates(merged.dates),
+          updatedAt: Math.max(Number(merged.updatedAt) || 0, Number(remote.updatedAt) || 0),
+        };
+      }
+
       saveLocal(data);
-    } else if (Object.keys(data.dates).length > 0) {
-      await writeGistFile(cfg.gistId, cfg.githubToken, data);
+      notify("online");
+      return data;
+    } finally {
+      pulling = false;
     }
-    notify("online");
-    return data;
+  }
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+      if (document.hidden) return;
+      pullRemote().catch(() => notify("error"));
+    }, POLL_MS);
   }
 
   async function init() {
@@ -240,11 +336,18 @@ export function createStorage(userConfig = {}) {
     }
 
     try {
-      await pullRemote();
-      // 轮询实现多端接近实时同步
-      pollTimer = setInterval(() => {
-        pullRemote().catch(() => notify("error"));
-      }, 8000);
+      await pullRemote({ force: true });
+      startPolling();
+
+      const onWake = () => {
+        pullRemote({ force: true }).catch(() => notify("error"));
+      };
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) onWake();
+      });
+      window.addEventListener("focus", onWake);
+      window.addEventListener("pageshow", onWake);
+
       return { mode: "online", message: "云端同步已开启" };
     } catch (err) {
       console.error(err);

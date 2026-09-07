@@ -533,7 +533,13 @@ els.copySyncLinkBtn.addEventListener("click", async () => {
 });
 
 updateSyncSetupUI();
-render();
+// 云端模式先等首拉完成再渲染，避免手机先闪出旧本地数据
+if (!storage.isCloud) {
+  render();
+} else {
+  setSyncUI("online");
+  els.syncText.textContent = "同步中…";
+}
 
 storage.init().then((result) => {
   const cleared = new URLSearchParams(location.search).get("cleared") === "1";
@@ -559,5 +565,5 @@ storage.init().then((result) => {
     els.syncSetup.hidden = true;
     els.syncShare.hidden = false;
   }
-  if (!formDirty) render();
+  render();
 });
