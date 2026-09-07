@@ -1,41 +1,107 @@
 /**
- * 多用户跳绳打卡存储
+ * 多用户多运动打卡存储（跳绳 / 跑步 / 游泳）
  * - 用手机号 + 密码区分用户
  * - GitHub Gist 云端同步（同一手机号多端共享）
  */
+
+import {
+  ACTIVITY_ORDER,
+  normalizeActivityRecord,
+  isValidRecord,
+} from "./activities.js";
 
 const CONFIG_OVERRIDE_KEY = "jump-rope-sync-config-v1";
 const SESSION_KEY = "jump-rope-session-v2";
 const POLL_MS = 5000;
 
+function emptyActivities() {
+  return { rope: {}, run: {}, swim: {} };
+}
+
 function emptyUser() {
-  return { pin: "", dates: {}, updatedAt: 0 };
+  return { pin: "", activities: emptyActivities(), updatedAt: 0 };
 }
 
 function emptyStore() {
   return { version: 2, users: {} };
 }
 
-function normalizeRecord(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const count = Math.max(0, Math.round(Number(raw.count) || 0));
-  const durationSec = Math.max(0, Math.round(Number(raw.durationSec) || 0));
-  return {
-    count,
-    durationSec,
-    note: typeof raw.note === "string" ? raw.note : "",
-    at: Number(raw.at) || Date.now(),
-  };
-}
-
-function normalizeDates(dates) {
+function normalizeActivityDates(dates, type) {
   const out = {};
   if (!dates || typeof dates !== "object") return out;
   for (const [key, value] of Object.entries(dates)) {
-    const rec = normalizeRecord(value);
-    if (rec && rec.count > 0) out[key] = rec;
+    const rec = normalizeActivityRecord(value, type);
+    if (rec && isValidRecord(rec, type)) out[key] = rec;
   }
   return out;
+}
+
+function normalizeActivities(activities) {
+  const out = emptyActivities();
+  for (const type of ACTIVITY_ORDER) {
+    out[type] = normalizeActivityDates(activities?.[type], type);
+  }
+  return out;
+}
+
+/** 兼容旧版 user.dates 与新版 user.activities */
+function normalizeUser(u) {
+  const pin = String(u?.pin || "");
+  const updatedAt = Number(u?.updatedAt) || 0;
+  let activities = emptyActivities();
+
+  if (u?.activities && typeof u.activities === "object") {
+    activities = normalizeActivities(u.activities);
+  }
+
+  if (u?.dates && typeof u.dates === "object") {
+    const legacyRope = normalizeActivityDates(u.dates, "rope");
+    activities.rope = mergeActivityMaps(activities.rope, legacyRope, "rope");
+  }
+
+  return { pin, activities: normalizeActivities(activities), updatedAt };
+}
+
+function mergeActivityMaps(a, b, type) {
+  const dates = {};
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const key of keys) {
+    const left = a?.[key];
+    const right = b?.[key];
+    if (left && right) {
+      dates[key] = (Number(left.at) || 0) >= (Number(right.at) || 0) ? left : right;
+    } else {
+      dates[key] = left || right;
+    }
+  }
+  return normalizeActivityDates(dates, type);
+}
+
+function mergeActivities(a, b) {
+  const out = emptyActivities();
+  for (const type of ACTIVITY_ORDER) {
+    out[type] = mergeActivityMaps(a?.[type], b?.[type], type);
+  }
+  return out;
+}
+
+function recordFingerprint(rec, type) {
+  const parts = [rec.durationSec, rec.at, rec.note || ""];
+  if (type === "rope") parts.unshift(rec.count);
+  else parts.unshift(rec.distance);
+  return parts.join(":");
+}
+
+function activitiesFingerprint(activities) {
+  return ACTIVITY_ORDER.map((type) => {
+    const dates = activities?.[type] || {};
+    const keys = Object.keys(dates).sort();
+    return `${type}:${keys.map((k) => `${k}:${recordFingerprint(dates[k], type)}`).join(",")}`;
+  }).join("|");
+}
+
+function hasAnyActivities(activities) {
+  return ACTIVITY_ORDER.some((type) => Object.keys(activities?.[type] || {}).length > 0);
 }
 
 function normalizePhone(phone) {
@@ -58,12 +124,7 @@ function loadUserLocal(phone) {
   try {
     const raw = localStorage.getItem(userLocalKey(phone));
     if (!raw) return emptyUser();
-    const parsed = JSON.parse(raw);
-    return {
-      pin: String(parsed.pin || ""),
-      dates: normalizeDates(parsed.dates),
-      updatedAt: Number(parsed.updatedAt) || 0,
-    };
+    return normalizeUser(JSON.parse(raw));
   } catch {
     return emptyUser();
   }
@@ -74,7 +135,7 @@ function saveUserLocal(phone, user) {
     userLocalKey(phone),
     JSON.stringify({
       pin: String(user.pin || ""),
-      dates: normalizeDates(user.dates),
+      activities: normalizeActivities(user.activities),
       updatedAt: Number(user.updatedAt) || 0,
     })
   );
@@ -154,11 +215,7 @@ function parseStore(raw) {
     for (const [phone, u] of Object.entries(raw.users)) {
       const p = phone === "__legacy__" ? "__legacy__" : normalizePhone(phone);
       if (!p) continue;
-      users[p] = {
-        pin: String(u?.pin || ""),
-        dates: normalizeDates(u?.dates),
-        updatedAt: Number(u?.updatedAt) || 0,
-      };
+      users[p] = normalizeUser(u);
     }
     return { version: 2, users };
   }
@@ -167,40 +224,15 @@ function parseStore(raw) {
     return {
       version: 2,
       users: {
-        __legacy__: {
+        __legacy__: normalizeUser({
           pin: "",
-          dates: normalizeDates(raw.dates),
+          dates: raw.dates,
           updatedAt: Number(raw.updatedAt) || 0,
-        },
+        }),
       },
     };
   }
   return emptyStore();
-}
-
-function mergeDates(a, b) {
-  const dates = {};
-  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
-  for (const key of keys) {
-    const left = a?.[key];
-    const right = b?.[key];
-    if (left && right) {
-      dates[key] = (Number(left.at) || 0) >= (Number(right.at) || 0) ? left : right;
-    } else {
-      dates[key] = left || right;
-    }
-  }
-  return normalizeDates(dates);
-}
-
-function datesFingerprint(dates) {
-  return Object.keys(dates || {})
-    .sort()
-    .map((k) => {
-      const r = dates[k];
-      return `${k}:${r.count}:${r.durationSec}:${r.at}:${r.note || ""}`;
-    })
-    .join("|");
 }
 
 async function fetchStore(gistId, token) {
@@ -299,9 +331,9 @@ export function createStorage(userConfig = {}) {
 
   function getPublicData() {
     return {
-      dates: data.dates || {},
-      updatedAt: data.updatedAt || 0,
       phone,
+      updatedAt: data.updatedAt || 0,
+      activities: normalizeActivities(data.activities),
     };
   }
 
@@ -327,31 +359,31 @@ export function createStorage(userConfig = {}) {
     const users = { ...(latest.users || {}) };
     users[phone] = {
       pin: data.pin || session?.pin || "",
-      dates: normalizeDates(data.dates),
+      activities: normalizeActivities(data.activities),
       updatedAt: Number(data.updatedAt) || Date.now(),
     };
     if (users.__legacy__) delete users.__legacy__;
     cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
     const remoteUser = cloudStore.users?.[phone];
     if (remoteUser) {
-      data = {
+      data = normalizeUser({
         pin: remoteUser.pin || data.pin,
-        dates: normalizeDates(remoteUser.dates),
+        activities: remoteUser.activities,
         updatedAt: Number(remoteUser.updatedAt) || data.updatedAt,
-      };
+      });
       saveUserLocal(phone, data);
     }
     dirty = false;
   }
 
-  async function persistUserDates(nextDates) {
+  async function persistActivities(nextActivities) {
     if (!phone) throw new Error("请先登录");
     writing = true;
     dirty = true;
     try {
       data = {
         pin: data.pin || session?.pin || "",
-        dates: normalizeDates(nextDates),
+        activities: normalizeActivities(nextActivities),
         updatedAt: Date.now(),
       };
       saveUserLocal(phone, data);
@@ -374,19 +406,26 @@ export function createStorage(userConfig = {}) {
     }
   }
 
-  async function upsert(dateKey, record) {
+  async function upsert(type, dateKey, record) {
     if (dateKey > todayStr()) throw new Error("不能给未来日期打卡");
-    const next = normalizeRecord({ ...record, at: Date.now() });
-    if (!next || next.count <= 0) throw new Error("请填写有效的跳绳个数");
-    const dates = { ...data.dates, [dateKey]: next };
-    return persistUserDates(dates);
+    if (!ACTIVITY_ORDER.includes(type)) throw new Error("未知打卡类型");
+    const next = normalizeActivityRecord({ ...record, at: Date.now() }, type);
+    if (!next || !isValidRecord(next, type)) {
+      throw new Error("请填写有效的打卡数据");
+    }
+    const activities = normalizeActivities(data.activities);
+    activities[type] = { ...activities[type], [dateKey]: next };
+    return persistActivities(activities);
   }
 
-  async function remove(dateKey) {
+  async function remove(type, dateKey) {
     if (dateKey > todayStr()) throw new Error("不能修改未来日期");
-    const dates = { ...data.dates };
-    delete dates[dateKey];
-    return persistUserDates(dates);
+    if (!ACTIVITY_ORDER.includes(type)) throw new Error("未知打卡类型");
+    const activities = normalizeActivities(data.activities);
+    const nextTypeMap = { ...activities[type] };
+    delete nextTypeMap[dateKey];
+    activities[type] = nextTypeMap;
+    return persistActivities(activities);
   }
 
   async function pullRemote() {
@@ -398,7 +437,7 @@ export function createStorage(userConfig = {}) {
       const remoteUser = latest.users?.[phone];
 
       if (!remoteUser) {
-        if (Object.keys(data.dates || {}).length > 0) {
+        if (hasAnyActivities(data.activities)) {
           writing = true;
           try {
             await pushCurrentUser(latest);
@@ -417,18 +456,18 @@ export function createStorage(userConfig = {}) {
         return getPublicData();
       }
 
-      const mergedDates = mergeDates(data.dates, remoteUser.dates);
-      const remoteFp = datesFingerprint(remoteUser.dates);
-      const mergedFp = datesFingerprint(mergedDates);
+      const remoteNorm = normalizeUser(remoteUser);
+      const mergedActivities = mergeActivities(data.activities, remoteNorm.activities);
+      const remoteFp = activitiesFingerprint(remoteNorm.activities);
+      const mergedFp = activitiesFingerprint(mergedActivities);
 
       data = {
-        pin: remoteUser.pin || data.pin || session?.pin || "",
-        dates: mergedDates,
-        updatedAt: Math.max(Number(data.updatedAt) || 0, Number(remoteUser.updatedAt) || 0),
+        pin: remoteNorm.pin || data.pin || session?.pin || "",
+        activities: mergedActivities,
+        updatedAt: Math.max(Number(data.updatedAt) || 0, Number(remoteNorm.updatedAt) || 0),
       };
       saveUserLocal(phone, data);
 
-      // 合并后比云端多了内容 → 写回；否则只读更新本地
       if (mergedFp !== remoteFp) {
         writing = true;
         try {
@@ -468,45 +507,44 @@ export function createStorage(userConfig = {}) {
     const latest = await fetchStore(cfg.gistId, cfg.githubToken);
     cloudStore = latest;
     const users = { ...(latest.users || {}) };
-    let user = users[p];
+    let user = users[p] ? normalizeUser(users[p]) : null;
 
     // 迁移旧版无主数据到当前账号（仅当该手机号首次注册）
-    if (!user && users.__legacy__ && Object.keys(users.__legacy__.dates || {}).length > 0) {
-      user = {
+    if (!user && users.__legacy__ && hasAnyActivities(normalizeUser(users.__legacy__).activities)) {
+      user = normalizeUser({
+        ...users.__legacy__,
         pin,
-        dates: normalizeDates(users.__legacy__.dates),
         updatedAt: Number(users.__legacy__.updatedAt) || Date.now(),
-      };
+      });
+      user.pin = pin;
       users[p] = user;
       delete users.__legacy__;
       cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
-      user = cloudStore.users?.[p] || user;
+      user = cloudStore.users?.[p] ? normalizeUser(cloudStore.users[p]) : user;
     } else if (!user) {
-      user = { pin, dates: {}, updatedAt: Date.now() };
+      user = { pin, activities: emptyActivities(), updatedAt: Date.now() };
       users[p] = user;
       cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
-      user = cloudStore.users?.[p] || user;
+      user = cloudStore.users?.[p] ? normalizeUser(cloudStore.users[p]) : user;
     } else if (user.pin && user.pin !== pin) {
       throw new Error("密码错误");
     } else if (!user.pin) {
-      // 补设密码
       user = { ...user, pin, updatedAt: Date.now() };
       users[p] = user;
       cloudStore = await writeStore(cfg.gistId, cfg.githubToken, { version: 2, users });
-      user = cloudStore.users?.[p] || user;
+      user = cloudStore.users?.[p] ? normalizeUser(cloudStore.users[p]) : user;
     }
 
     phone = p;
     session = { phone: p, pin };
     saveSession(p, pin);
-    data = {
+    data = normalizeUser({
       pin: user.pin || pin,
-      dates: normalizeDates(user.dates),
+      activities: user.activities,
       updatedAt: Number(user.updatedAt) || Date.now(),
-    };
-    // 合并本地缓存
+    });
     const local = loadUserLocal(p);
-    data.dates = mergeDates(local.dates, data.dates);
+    data.activities = mergeActivities(local.activities, data.activities);
     saveUserLocal(p, data);
     dirty = false;
     lastError = "";
@@ -543,7 +581,6 @@ export function createStorage(userConfig = {}) {
       return { mode: "need-login", message: "请登录" };
     }
     try {
-      // 用会话重新走一遍云端校验
       await login(session.phone, session.pin);
       const onWake = () => {
         if (!document.hidden) pullRemote().catch(() => {});

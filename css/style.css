@@ -165,6 +165,126 @@ body {
   gap: 8px;
 }
 
+.switcher-bar {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  animation: fade-up 0.55s ease both;
+}
+
+.switcher-block {
+  display: grid;
+  gap: 6px;
+}
+
+.switcher-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line);
+}
+
+#viewSeg {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.seg-btn {
+  font-family: inherit;
+  border: none;
+  cursor: pointer;
+  padding: 10px 8px;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  font-weight: 600;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.15s ease;
+}
+
+.seg-btn:hover {
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.seg-btn.is-active {
+  background: linear-gradient(135deg, var(--teal), #0d9488);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(15, 118, 110, 0.22);
+}
+
+.seg-btn:active {
+  transform: scale(0.98);
+}
+
+.table-panel {
+  margin-bottom: 18px;
+  padding: 16px 14px 12px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+  animation: fade-up 0.65s ease both;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+.record-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.record-table th,
+.record-table td {
+  padding: 10px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.record-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+.record-table tbody tr {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.record-table tbody tr:hover {
+  background: rgba(15, 118, 110, 0.06);
+}
+
+.record-table tbody tr.is-selected {
+  background: rgba(15, 118, 110, 0.12);
+}
+
+.record-table tbody tr.is-best td:first-child {
+  color: #c2410c;
+  font-weight: 700;
+}
+
+.table-empty {
+  margin: 18px 0 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 .logout-btn {
   font-family: inherit;
   border: none;

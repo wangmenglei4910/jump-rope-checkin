@@ -4,11 +4,21 @@ import {
   isSyncReady,
   isValidPhone,
   isValidPin,
-} from "./storage.js?v=20260907c";
-import { renderLineChart } from "./chart.js?v=20260907c";
+} from "./storage.js?v=20260907e";
+import { renderLineChart } from "./chart.js?v=20260907e";
+import {
+  ACTIVITY_ORDER,
+  getActivity,
+  primaryValue,
+  formatPrimary,
+  formatRecordSummary,
+  formatDuration,
+  isValidRecord,
+} from "./activities.js?v=20260907e";
 
 const WEEK_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
 const THUMB_SVG = `<svg class="day-thumb" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.6 8.5V5.2A2.2 2.2 0 0 0 12.4 3h-.3c-.7 0-1.3.4-1.6 1l-3.2 6.2H4.5A1.5 1.5 0 0 0 3 11.7v6.8A1.5 1.5 0 0 0 4.5 20h9.8c1.4 0 2.6-1 2.9-2.3l1.5-6.2c.3-1.4-.7-2.7-2.1-2.7h-2z"/></svg>`;
+const PREFS_KEY = "sport-checkin-prefs-v1";
 
 function pad(n) {
   return String(n).padStart(2, "0");
@@ -35,17 +45,6 @@ function formatDateLabel(key) {
   const d = parseKey(key);
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 周${WEEK_LABELS[d.getDay()]}`;
 }
-function formatDuration(sec) {
-  const s = Math.max(0, Math.round(sec || 0));
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m <= 0) return `${r}秒`;
-  if (r === 0) return `${m}分钟`;
-  return `${m}分${pad(r)}秒`;
-}
-function formatCount(n) {
-  return `${Number(n) || 0}`;
-}
 function maskPhone(phone) {
   const p = String(phone || "");
   if (p.length < 7) return p;
@@ -61,37 +60,62 @@ function isCurrentOrPastMonth(year, monthIndex) {
   const now = new Date();
   return year < now.getFullYear() || (year === now.getFullYear() && monthIndex <= now.getMonth());
 }
-function findMonthBestKey(dates, viewYear, viewMonth) {
+
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      activity: ACTIVITY_ORDER.includes(parsed.activity) ? parsed.activity : "rope",
+      view: parsed.view === "table" ? "table" : "calendar",
+    };
+  } catch {
+    return { activity: "rope", view: "calendar" };
+  }
+}
+
+function savePrefs(partial) {
+  const next = { ...loadPrefs(), ...partial };
+  localStorage.setItem(PREFS_KEY, JSON.stringify(next));
+  return next;
+}
+
+function findMonthBestKey(dates, viewYear, viewMonth, type) {
   let bestKey = null;
-  let best = null;
-  for (const [key, rec] of Object.entries(dates)) {
+  let bestVal = -1;
+  let bestDur = Infinity;
+  for (const [key, rec] of Object.entries(dates || {})) {
     const d = parseKey(key);
     if (d.getFullYear() !== viewYear || d.getMonth() !== viewMonth) continue;
-    if (!rec || !(rec.count > 0)) continue;
-    if (!best || rec.count > best.count || (rec.count === best.count && rec.durationSec < best.durationSec)) {
-      best = rec;
+    const val = primaryValue(rec, type);
+    if (!(val > 0)) continue;
+    const dur = Number(rec.durationSec) || 0;
+    if (val > bestVal || (val === bestVal && dur < bestDur)) {
+      bestVal = val;
+      bestDur = dur;
       bestKey = key;
     }
   }
   return bestKey;
 }
-function calcStats(dates, viewYear, viewMonth) {
-  const keys = Object.keys(dates).sort();
+
+function calcStats(dates, viewYear, viewMonth, type) {
+  const keys = Object.keys(dates || {}).sort();
   const total = keys.length;
   let monthSum = 0;
   let monthBest = 0;
   for (const key of keys) {
     const d = parseKey(key);
     if (d.getFullYear() !== viewYear || d.getMonth() !== viewMonth) continue;
-    const count = Number(dates[key]?.count) || 0;
-    monthSum += count;
-    monthBest = Math.max(monthBest, count);
+    const val = primaryValue(dates[key], type);
+    monthSum += val;
+    monthBest = Math.max(monthBest, val);
   }
   const today = startOfDay(new Date());
   const tKey = toKey(today);
   let streak = 0;
-  let cursor = dates[tKey] ? today : addDays(today, -1);
-  while (dates[toKey(cursor)]) {
+  let cursor = dates?.[tKey] ? today : addDays(today, -1);
+  while (dates?.[toKey(cursor)]) {
     streak += 1;
     cursor = addDays(cursor, -1);
   }
@@ -109,17 +133,38 @@ const els = {
   pinInput: document.getElementById("pinInput"),
   loginBtn: document.getElementById("loginBtn"),
   mainApp: document.getElementById("mainApp"),
+  brandMark: document.getElementById("brandMark"),
+  brandTitle: document.getElementById("brandTitle"),
   userLine: document.getElementById("userLine"),
   logoutBtn: document.getElementById("logoutBtn"),
+  activitySeg: document.getElementById("activitySeg"),
+  viewSeg: document.getElementById("viewSeg"),
   syncStatus: document.getElementById("syncStatus"),
   syncText: document.getElementById("syncText"),
+  calendarPanel: document.getElementById("calendarPanel"),
+  tablePanel: document.getElementById("tablePanel"),
   monthTitle: document.getElementById("monthTitle"),
+  monthTitleTable: document.getElementById("monthTitleTable"),
   calendarGrid: document.getElementById("calendarGrid"),
+  tableBody: document.getElementById("tableBody"),
+  tableEmpty: document.getElementById("tableEmpty"),
+  tableMetricHead: document.getElementById("tableMetricHead"),
   prevMonth: document.getElementById("prevMonth"),
   nextMonth: document.getElementById("nextMonth"),
   todayBtn: document.getElementById("todayBtn"),
+  prevMonthTable: document.getElementById("prevMonthTable"),
+  nextMonthTable: document.getElementById("nextMonthTable"),
+  todayBtnTable: document.getElementById("todayBtnTable"),
+  legendText: document.getElementById("legendText"),
+  statBestLabel: document.getElementById("statBestLabel"),
+  statSumLabel: document.getElementById("statSumLabel"),
   recordTitle: document.getElementById("recordTitle"),
+  countField: document.getElementById("countField"),
+  countLabel: document.getElementById("countLabel"),
   countInput: document.getElementById("countInput"),
+  distanceField: document.getElementById("distanceField"),
+  distanceLabel: document.getElementById("distanceLabel"),
+  distanceInput: document.getElementById("distanceInput"),
   minInput: document.getElementById("minInput"),
   secInput: document.getElementById("secInput"),
   noteInput: document.getElementById("noteInput"),
@@ -141,6 +186,9 @@ let viewMonth = today.getMonth();
 let selectedKey = toKey(today);
 let toastTimer = null;
 let formDirty = false;
+const prefs = loadPrefs();
+let activityType = prefs.activity;
+let viewMode = prefs.view;
 
 const userConfig = window.CHECKIN_CONFIG || {};
 
@@ -159,6 +207,10 @@ function bootstrapSyncFromUrl() {
 
 bootstrapSyncFromUrl();
 let storage = createStorage(userConfig);
+
+function currentDates(data = storage.getData()) {
+  return data?.activities?.[activityType] || {};
+}
 
 function showToast(message) {
   els.toast.hidden = false;
@@ -180,7 +232,7 @@ function setSyncUI(status, errorMsg = "") {
     els.syncText.textContent = "云端已同步";
   } else if (status === "error") {
     els.syncStatus.classList.add("is-error");
-    els.syncText.textContent = errorMsg ? `同步异常` : "同步异常";
+    els.syncText.textContent = "同步异常";
     if (errorMsg) els.syncStatus.title = errorMsg;
   } else {
     els.syncStatus.classList.add("is-local");
@@ -194,36 +246,74 @@ function showScreen({ setup = false, login = false, main = false }) {
   els.mainApp.hidden = !main;
 }
 
+function applyActivityChrome() {
+  const cfg = getActivity(activityType);
+  els.brandMark.textContent = cfg.brand;
+  els.brandTitle.textContent = `${cfg.name}打卡`;
+  els.statBestLabel.textContent = cfg.bestLabel;
+  els.statSumLabel.textContent = cfg.sumLabel;
+  els.legendText.textContent = cfg.legend;
+  els.tableMetricHead.textContent = cfg.id === "rope" ? "个数" : `距离(${cfg.distanceUnit})`;
+
+  for (const btn of els.activitySeg.querySelectorAll(".seg-btn")) {
+    btn.classList.toggle("is-active", btn.dataset.activity === activityType);
+  }
+  for (const btn of els.viewSeg.querySelectorAll(".seg-btn")) {
+    btn.classList.toggle("is-active", btn.dataset.view === viewMode);
+  }
+
+  const isRope = activityType === "rope";
+  els.countField.hidden = !isRope;
+  els.distanceField.hidden = isRope;
+  if (!isRope) {
+    els.distanceLabel.textContent = cfg.distanceLabel;
+    els.distanceInput.step = cfg.distanceStep;
+    els.distanceInput.placeholder = cfg.distancePlaceholder;
+  } else {
+    els.countLabel.textContent = "跳绳个数";
+  }
+
+  els.calendarPanel.hidden = viewMode !== "calendar";
+  els.tablePanel.hidden = viewMode !== "table";
+}
+
 function readForm() {
-  const count = Math.round(Number(els.countInput.value));
   const minutes = Math.max(0, Math.round(Number(els.minInput.value) || 0));
   let seconds = Math.max(0, Math.round(Number(els.secInput.value) || 0));
   if (seconds > 59) seconds = 59;
-  return { count, durationSec: minutes * 60 + seconds, note: els.noteInput.value.trim() };
+  const durationSec = minutes * 60 + seconds;
+  const note = els.noteInput.value.trim();
+  if (activityType === "rope") {
+    return { count: Math.round(Number(els.countInput.value)), durationSec, note };
+  }
+  return { distance: Number(els.distanceInput.value), durationSec, note };
 }
 
 function fillForm(rec) {
   formDirty = false;
-  if (!rec) {
-    els.countInput.value = "";
-    els.minInput.value = "";
-    els.secInput.value = "";
-    els.noteInput.value = "";
-    return;
-  }
+  els.countInput.value = "";
+  els.distanceInput.value = "";
+  els.minInput.value = "";
+  els.secInput.value = "";
+  els.noteInput.value = "";
+  if (!rec) return;
   const sec = Math.max(0, Math.round(rec.durationSec || 0));
-  els.countInput.value = rec.count ? String(rec.count) : "";
   els.minInput.value = String(Math.floor(sec / 60));
   els.secInput.value = String(sec % 60);
   els.noteInput.value = rec.note || "";
+  if (activityType === "rope") {
+    els.countInput.value = rec.count ? String(rec.count) : "";
+  } else {
+    els.distanceInput.value = rec.distance != null ? String(rec.distance) : "";
+  }
 }
 
 function renderStats(dates) {
-  const s = calcStats(dates, viewYear, viewMonth);
+  const s = calcStats(dates, viewYear, viewMonth, activityType);
   els.statTotal.textContent = String(s.total);
   els.statStreak.textContent = String(s.streak);
-  els.statMonthBest.textContent = formatCount(s.monthBest);
-  els.statMonthSum.textContent = formatCount(s.monthSum);
+  els.statMonthBest.textContent = formatPrimary(s.monthBest, activityType);
+  els.statMonthSum.textContent = formatPrimary(s.monthSum, activityType);
 }
 
 function updateMonthNav() {
@@ -232,17 +322,21 @@ function updateMonthNav() {
     viewMonth === 11 ? 0 : viewMonth + 1
   );
   els.nextMonth.disabled = !canGoNext;
+  els.nextMonthTable.disabled = !canGoNext;
 }
 
 function renderCalendar(dates) {
-  els.monthTitle.textContent = formatMonthTitle(viewYear, viewMonth);
+  const title = formatMonthTitle(viewYear, viewMonth);
+  els.monthTitle.textContent = title;
+  els.monthTitleTable.textContent = title;
   els.calendarGrid.innerHTML = "";
   updateMonthNav();
+
   const first = new Date(viewYear, viewMonth, 1);
   const startOffset = (first.getDay() + 6) % 7;
   const gridStart = addDays(first, -startOffset);
   const tKey = todayKey();
-  const bestKey = findMonthBestKey(dates, viewYear, viewMonth);
+  const bestKey = findMonthBestKey(dates, viewYear, viewMonth, activityType);
 
   for (let i = 0; i < 42; i += 1) {
     const date = addDays(gridStart, i);
@@ -269,28 +363,68 @@ function renderCalendar(dates) {
   }
 }
 
+function renderTable(dates) {
+  els.tableBody.innerHTML = "";
+  const rows = Object.keys(dates || {})
+    .filter((key) => {
+      const d = parseKey(key);
+      return d.getFullYear() === viewYear && d.getMonth() === viewMonth;
+    })
+    .sort((a, b) => (a < b ? 1 : -1));
+
+  els.tableEmpty.hidden = rows.length > 0;
+  const bestKey = findMonthBestKey(dates, viewYear, viewMonth, activityType);
+  const cfg = getActivity(activityType);
+
+  for (const key of rows) {
+    const rec = dates[key];
+    const tr = document.createElement("tr");
+    if (key === selectedKey) tr.classList.add("is-selected");
+    if (key === bestKey) tr.classList.add("is-best");
+    const metric =
+      cfg.id === "rope"
+        ? `${formatPrimary(rec.count, activityType)}${cfg.metricUnit}`
+        : `${formatPrimary(rec.distance, activityType)}${cfg.distanceUnit}`;
+    tr.innerHTML = `
+      <td>${parseKey(key).getMonth() + 1}/${parseKey(key).getDate()}</td>
+      <td>${metric}</td>
+      <td>${formatDuration(rec.durationSec)}</td>
+      <td>${rec.note ? escapeHtml(rec.note) : "—"}</td>
+    `;
+    tr.addEventListener("click", () => onDaySelect(key));
+    els.tableBody.appendChild(tr);
+  }
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function renderRecord(dates) {
   if (isFutureKey(selectedKey)) {
     selectedKey = todayKey();
     formDirty = false;
   }
+  const cfg = getActivity(activityType);
   const rec = dates[selectedKey];
   const isToday = selectedKey === todayKey();
-  const isBest =
-    selectedKey === findMonthBestKey(dates, viewYear, viewMonth) &&
-    parseKey(selectedKey).getMonth() === viewMonth &&
-    parseKey(selectedKey).getFullYear() === viewYear;
+  const isBest = selectedKey === findMonthBestKey(dates, viewYear, viewMonth, activityType);
 
   els.recordTitle.textContent = isToday
-    ? `今日跳绳${isBest ? " · 本月最佳" : ""}`
+    ? `今日${cfg.name}${isBest ? " · 本月最佳" : ""}`
     : `${formatDateLabel(selectedKey)}${isBest ? " · 本月最佳" : ""}`;
+
   if (!formDirty) fillForm(rec || null);
   els.saveBtnText.textContent = rec ? "更新记录" : "保存打卡";
   els.saveBtn.classList.toggle("is-done", Boolean(rec));
   els.deleteBtn.hidden = !rec;
   els.actionHint.textContent = rec
-    ? `${rec.count} 个 · ${formatDuration(rec.durationSec)} · 可修改后更新`
-    : "只能打卡今天及之前；填写后保存";
+    ? `${formatRecordSummary(rec, activityType)} · 可修改后更新`
+    : `填写${cfg.name}数据后保存`;
 }
 
 function renderChart(dates) {
@@ -299,20 +433,24 @@ function renderChart(dates) {
     viewYear,
     viewMonth,
     selectedKey,
-    bestKey: findMonthBestKey(dates, viewYear, viewMonth),
+    bestKey: findMonthBestKey(dates, viewYear, viewMonth, activityType),
     onSelect: onDaySelect,
+    type: activityType,
   });
 }
 
-function render(dates = storage.getData().dates) {
+function render(data = storage.getData()) {
   if (!storage.isLoggedIn()) return;
+  applyActivityChrome();
   els.userLine.textContent = `账号 ${maskPhone(storage.getPhone())}`;
+  const dates = data?.activities?.[activityType] || {};
   if (isFutureKey(selectedKey)) {
     selectedKey = todayKey();
     formDirty = false;
   }
   renderStats(dates);
   renderCalendar(dates);
+  renderTable(dates);
   renderChart(dates);
   renderRecord(dates);
 }
@@ -322,7 +460,6 @@ function onDaySelect(key) {
     showToast("只能选择今天及之前的日期");
     return;
   }
-  if (key === selectedKey) return;
   selectedKey = key;
   formDirty = false;
   const d = parseKey(key);
@@ -333,43 +470,58 @@ function onDaySelect(key) {
 
 async function onSave() {
   const form = readForm();
-  if (!Number.isFinite(form.count) || form.count <= 0) {
-    showToast("请填写跳绳个数");
+  if (!isValidRecord(form, activityType)) {
+    showToast(activityType === "rope" ? "请填写个数和耗时" : "请填写距离和耗时");
     return;
   }
-  if (form.durationSec <= 0) {
-    showToast("请填写耗时");
-    return;
-  }
-  await storage.upsert(selectedKey, form);
+  await storage.upsert(activityType, selectedKey, form);
   formDirty = false;
   showToast("打卡已保存并同步");
   render();
 }
 
 async function onDelete() {
-  const ok = window.confirm(`确定删除 ${formatDateLabel(selectedKey)} 的记录？`);
+  const ok = window.confirm(`确定删除 ${formatDateLabel(selectedKey)} 的${getActivity(activityType).name}记录？`);
   if (!ok) return;
-  await storage.remove(selectedKey);
+  await storage.remove(activityType, selectedKey);
   formDirty = false;
   showToast("已删除并同步");
+  render();
+}
+
+function shiftMonth(delta) {
+  if (delta < 0) {
+    viewMonth -= 1;
+    if (viewMonth < 0) {
+      viewMonth = 11;
+      viewYear -= 1;
+    }
+  } else {
+    const nextYear = viewMonth === 11 ? viewYear + 1 : viewYear;
+    const nextMonth = viewMonth === 11 ? 0 : viewMonth + 1;
+    if (!isCurrentOrPastMonth(nextYear, nextMonth)) {
+      showToast("不能进入未来月份");
+      return;
+    }
+    viewYear = nextYear;
+    viewMonth = nextMonth;
+  }
+  render();
+}
+
+function goToday() {
+  const now = new Date();
+  viewYear = now.getFullYear();
+  viewMonth = now.getMonth();
+  selectedKey = todayKey();
+  formDirty = false;
   render();
 }
 
 function bindStorageEvents() {
   storage.onChange((data, status, errorMsg) => {
     setSyncUI(status, errorMsg || storage.getLastError?.() || "");
-    if (status === "error" && errorMsg) {
-      // 不刷屏 toast，只在 title 里保留详情
-    }
-    if (storage.isLoggedIn()) {
-      if (!formDirty) render(data.dates);
-      else {
-        renderStats(data.dates);
-        renderCalendar(data.dates);
-        renderChart(data.dates);
-      }
-    }
+    if (storage.isLoggedIn()) render(data);
   });
 }
 
@@ -378,57 +530,51 @@ function enterMain() {
   setSyncUI("online");
   render();
 }
-
 function enterLogin() {
   showScreen({ login: true });
   setSyncUI("local");
 }
-
 function enterSetup() {
   showScreen({ setup: true });
   setSyncUI("local");
 }
-
 function rebuildStorage() {
   storage.destroy?.();
   storage = createStorage(userConfig);
   bindStorageEvents();
 }
 
-els.prevMonth.addEventListener("click", () => {
-  viewMonth -= 1;
-  if (viewMonth < 0) {
-    viewMonth = 11;
-    viewYear -= 1;
-  }
-  render();
-});
-els.nextMonth.addEventListener("click", () => {
-  const nextYear = viewMonth === 11 ? viewYear + 1 : viewYear;
-  const nextMonth = viewMonth === 11 ? 0 : viewMonth + 1;
-  if (!isCurrentOrPastMonth(nextYear, nextMonth)) {
-    showToast("不能进入未来月份");
-    return;
-  }
-  viewYear = nextYear;
-  viewMonth = nextMonth;
-  render();
-});
-els.todayBtn.addEventListener("click", () => {
-  const now = new Date();
-  viewYear = now.getFullYear();
-  viewMonth = now.getMonth();
-  selectedKey = todayKey();
+els.activitySeg.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-activity]");
+  if (!btn) return;
+  activityType = btn.dataset.activity;
+  savePrefs({ activity: activityType });
   formDirty = false;
   render();
 });
+
+els.viewSeg.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-view]");
+  if (!btn) return;
+  viewMode = btn.dataset.view;
+  savePrefs({ view: viewMode });
+  render();
+});
+
+els.prevMonth.addEventListener("click", () => shiftMonth(-1));
+els.nextMonth.addEventListener("click", () => shiftMonth(1));
+els.todayBtn.addEventListener("click", goToday);
+els.prevMonthTable.addEventListener("click", () => shiftMonth(-1));
+els.nextMonthTable.addEventListener("click", () => shiftMonth(1));
+els.todayBtnTable.addEventListener("click", goToday);
+
 els.saveBtn.addEventListener("click", () => {
   onSave().catch((err) => showToast(err.message || "保存失败"));
 });
 els.deleteBtn.addEventListener("click", () => {
   onDelete().catch((err) => showToast(err.message || "删除失败"));
 });
-for (const input of [els.countInput, els.minInput, els.secInput, els.noteInput]) {
+for (const input of [els.countInput, els.distanceInput, els.minInput, els.secInput, els.noteInput]) {
   input.addEventListener("input", () => {
     formDirty = true;
   });
@@ -474,7 +620,7 @@ els.loginBtn.addEventListener("click", async () => {
   els.loginBtn.disabled = true;
   try {
     await storage.login(phone, pin);
-    showToast("登录成功，数据已同步");
+    showToast("登录成功");
     enterMain();
   } catch (err) {
     showToast(err.message || "登录失败");
@@ -482,11 +628,9 @@ els.loginBtn.addEventListener("click", async () => {
     els.loginBtn.disabled = false;
   }
 });
-
 els.pinInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") els.loginBtn.click();
 });
-
 els.logoutBtn.addEventListener("click", () => {
   storage.logout();
   formDirty = false;
@@ -502,8 +646,6 @@ async function boot() {
     showToast("请先配置云端 Token");
     return;
   }
-
-  // 已有 token：显示登录；若有会话则自动登录
   if (storage.isLoggedIn()) {
     showScreen({ main: true });
     setSyncUI("online");
@@ -519,7 +661,6 @@ async function boot() {
     }
     return;
   }
-
   enterLogin();
 }
 
